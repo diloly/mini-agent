@@ -1,0 +1,38 @@
+# electron-builder 打包配置：Windows x64 / NSIS 安装包
+appId: com.localagent.miniagent
+productName: mini-agent
+copyright: Copyright © mini-agent
+
+directories:
+  output: release
+  # 不声明 buildResources：仓库里没有 build/ 目录，指向不存在的路径会让打包失败
+
+files:
+  - out/**/*
+  - package.json
+
+asar: true
+compression: maximum
+npmRebuild: false
+removePackageScripts: true
+
+electronLanguages:
+  - zh-CN
+  - en-US
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ${productName}
+  language: "2052"
+  deleteAppDataOnUninstall: false

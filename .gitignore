@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+release/
+build/
+
+*.log
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+*.tsbuildinfo

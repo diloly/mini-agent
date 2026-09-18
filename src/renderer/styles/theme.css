@@ -1,0 +1,271 @@
+/* 主题收束层：全仓唯一的色值定义处，也是唯一的组件外观覆盖处。
+   四段结构（顺序不可调换）：
+     ① 语义变量覆盖 —— 只有本文件允许出现十六进制色值
+     ② @theme inline 桥接 —— 把语义变量接进 Tailwind 的 --color-* 命名空间
+     ③ BEM 覆盖 —— 收束 HeroUI 组件与 Markdown 排版
+     ④ 动效压制与滚动条 —— data-reduce-motion=true 时统一关掉过渡
+   本文件被 src/renderer/index.css 在 @heroui/styles 之后、highlight.js 之前引入。
+*/
+
+/* ── ① 语义变量覆盖 ────────────────────────────────────────────────
+   未分层声明天然压过 @heroui/styles 的 @layer base，无需堆特异性。
+   :not() 为将来可能的 dark 模式留口子（当前 index.html 锁死 light，等价）。
+
+   上半段是 HeroUI 原生变量（组件本体真正消费的：--foreground / --border /
+   --field-* / --radius / --*-shadow / --default …）；
+   下半段是本项目别名，让已有的 text-fg / border-line 一行都不用改。      */
+:root:not([data-theme='dark']):not(.dark) {
+  /* ── HeroUI 原生语义变量 ── */
+  --background: #ffffff;
+  --foreground: #18181b;
+
+  --surface: #ffffff;
+  --surface-foreground: #18181b;
+  --surface-secondary: #f4f4f5;
+  --surface-secondary-foreground: #18181b;
+
+  --border: #e4e4e7;
+  --separator: #e4e4e7;
+  --muted: #71717a;
+
+  --accent: #2563eb;
+  --accent-foreground: #ffffff;
+  --danger: #dc2626;
+  --danger-foreground: #ffffff;
+
+  --default: #f4f4f5;
+  --default-foreground: #18181b;
+
+  /* overlay 是浮层自身的背景色，遮罩另有 --backdrop，两者不要混 */
+  --overlay: #ffffff;
+  --overlay-foreground: #18181b;
+  --backdrop: rgba(0, 0, 0, 0.35);
+
+  /* 表单字段：官方默认 border 为 transparent、width 为 0px，必须显式给 */
+  --field-background: #ffffff;
+  --field-foreground: #18181b;
+  --field-placeholder: #71717a;
+  --field-border: #e4e4e7;
+  --field-border-width: 1px;
+  --field-hover: #ffffff;
+  --field-focus: #ffffff;
+  --field-border-hover: #d4d4d8;
+  --field-border-focus: var(--accent);
+
+  /* 圆角：官方默认 0.5rem 会让 .button 算出 24px，必须收 */
+  --radius: 0.375rem; /* 6px */
+  --field-radius: 0.375rem;
+
+  /* 阴影压平：组件自带三层 --*-shadow */
+  --surface-shadow: 0 0 0 0 transparent;
+  --overlay-shadow: 0 0 0 0 transparent;
+  --field-shadow: 0 0 0 0 transparent;
+
+  --focus: var(--accent);
+  --link: #18181b;
+  --disabled-opacity: 0.5;
+
+  --scrollbar-thumb: #d4d4d8;
+  --scrollbar-track: transparent;
+  --scrollbar-width: thin;
+
+  /* ── 本项目别名：保留，让已有工具类一行都不用改 ── */
+  --background-secondary: #fafafa;
+  --fg: var(--foreground);
+  --line: var(--border);
+  --surface-selected: #e4e4e7;
+  --danger-soft: #fef2f2;
+}
+
+/* ── ② @theme inline 桥接 ───────────────────────────────────────────
+   --color-* 一经声明即生成 bg-* / text-* / border-* 工具类。
+   使用 inline 让工具类直接内联变量值，避免层级嵌套导致变量失效。        */
+@theme inline {
+  --color-background: var(--background);
+  --color-background-secondary: var(--background-secondary);
+  --color-surface: var(--surface);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-surface-selected: var(--surface-selected);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-overlay: var(--overlay);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+}
+
+/* ── ③ BEM 覆盖 ─────────────────────────────────────────────────────
+   只覆盖本批次实际用到的 HeroUI 组件，以及 Markdown 排版容器。          */
+@layer components {
+  /* 圆角一律写显式像素值：rounded-{lg,md} 这类相对值的算结果依赖 Tailwind 版本刻度
+     （v4.0 是 ×2、v4.1+ 是 ×1），不写死就无法保证 PRD 的「按钮 6px / 卡片与输入框 8px」。 */
+  .button {
+    @apply rounded-[6px] text-[13px] font-normal;
+  }
+
+  .button--ghost {
+    @apply text-muted;
+  }
+
+  .input,
+  .textarea {
+    @apply rounded-[8px] border border-line bg-surface px-3 py-2 text-[13px] text-fg;
+  }
+
+  .select {
+    @apply w-full;
+  }
+
+  .select__trigger {
+    @apply flex w-full items-center justify-between rounded-[8px] border border-line bg-surface px-3 py-2 text-[13px] text-fg;
+  }
+
+  .select__popover {
+    @apply rounded-[8px] border border-line bg-surface p-1;
+  }
+
+  /* 组件源码自带 shadow-field / overlay-shadow，变量之外再显式压一道 */
+  .input,
+  .textarea,
+  .select__trigger,
+  .select__popover,
+  .modal__dialog {
+    @apply shadow-none;
+  }
+
+  /* 下拉项的类名是 .list-box-item，不是 .select__item */
+  .list-box-item {
+    @apply rounded-[6px] text-[13px] text-fg;
+  }
+
+  .list-box-item[data-selected='true'] {
+    @apply bg-surface-selected text-fg;
+  }
+
+  /* 强调色仅用于「输入焦点」，其余位置一律走中性色 */
+  .input,
+  .textarea,
+  .select__trigger {
+    &:focus-visible,
+    &[data-focus-visible='true'] {
+      @apply border-accent ring-1 ring-accent/25;
+    }
+  }
+
+  /* 圆角显式写死 8px：rounded-xl 会随 --radius 放大，超过 PRD 的上限 */
+  .modal__dialog {
+    @apply gap-0 rounded-[8px] border border-line bg-background p-0;
+  }
+
+  .modal__header {
+    @apply border-b border-line px-4 py-3;
+  }
+
+  .modal__body {
+    @apply flex flex-col gap-4 px-4 py-4;
+  }
+
+  .modal__footer {
+    @apply border-t border-line px-4 py-3;
+  }
+
+  .alert {
+    @apply rounded-[8px] border border-line bg-surface-secondary px-3 py-2;
+  }
+
+  .alert__title {
+    @apply text-[13px] font-medium text-fg;
+  }
+
+  .alert__description {
+    @apply text-[12px] text-muted;
+  }
+
+  /* Markdown 渲染容器：由 MessageBubble 包裹，不用 dangerouslySetInnerHTML */
+  .markdown-body {
+    @apply text-[13px] leading-6 text-fg;
+
+    & p {
+      @apply my-2;
+    }
+
+    & p:first-child {
+      @apply mt-0;
+    }
+
+    & p:last-child {
+      @apply mb-0;
+    }
+
+    & ul {
+      @apply my-2 list-disc pl-5;
+    }
+
+    & ol {
+      @apply my-2 list-decimal pl-5;
+    }
+
+    & a {
+      @apply text-fg underline underline-offset-2;
+    }
+
+    & code {
+      @apply rounded bg-surface-secondary px-1 py-[1px] font-mono text-[12px];
+    }
+
+    & pre {
+      @apply my-3 overflow-x-auto rounded-[6px] border border-line bg-surface-secondary p-3;
+    }
+
+    & pre code {
+      @apply bg-transparent p-0 text-[12px] leading-5;
+    }
+
+    & table {
+      @apply my-3 w-full rounded-[6px] border-collapse text-[12px];
+    }
+
+    & th,
+    & td {
+      @apply border border-line px-2 py-1 text-left;
+    }
+
+    & blockquote {
+      @apply my-3 border-l-2 border-line pl-3 text-muted;
+    }
+  }
+}
+
+/* ── ④ 动效压制与滚动条 ─────────────────────────────────────────────
+   index.html 上带 data-reduce-motion="true"：桌面工具不需要装饰性动效。 */
+/* Spinner 必须放行：它是「正在加载」的唯一视觉信号，冻成静止图标会被当成卡死 */
+[data-reduce-motion='true'] *:not([data-slot='spinner']):not([data-slot*='spinner'] *),
+[data-reduce-motion='true'] *::before,
+[data-reduce-motion='true'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* 滚动条：不再用 `*` 选择器（特异性 (0,0,0) 会被 HeroUI 的 .scrollbar 工具类压掉），
+   交给改 ① 里的 --scrollbar-* token；下面这段是 Chromium/Electron 需要的私有伪元素补充。 */
+@layer base {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background-color: var(--scrollbar-track);
+  }
+}
