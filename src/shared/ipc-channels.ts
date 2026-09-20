@@ -4,7 +4,7 @@
  * 命名规范：域:动作（小写冒号分隔）。主进程、preload、渲染层三方只从本文件 import，
  * 仓库内禁止出现任何硬编码的通道字符串。
  */
-import type { ErrorCode, FinishReason, ModelInfo, ProviderId } from './types';
+import type { ErrorCode, FinishReason, ModelInfo, ProviderId, ToolStep } from './types';
 
 /** 全部 IPC 通道名 */
 export const CHANNELS = {
@@ -17,6 +17,8 @@ export const CHANNELS = {
   CHAT_CHUNK: 'chat:chunk',
   CHAT_END: 'chat:end',
   CHAT_ERROR: 'chat:error',
+  /** 工具调用步骤更新（全量快照，渲染层按 step.id 覆盖） */
+  CHAT_STEP: 'chat:step',
   CONFIG_GET: 'config:get',
   CONFIG_SAVE: 'config:save',
   MODELS_LIST: 'models:list',
@@ -93,6 +95,13 @@ export interface ChatErrorEvent {
   messageId: string;
   code: ErrorCode;
   message: string;
+}
+
+/** 工具步骤更新：全量快照（非增量），渲染层直接按 step.id 覆盖即可 */
+export interface ChatStepEvent {
+  requestId: string;
+  messageId: string;
+  step: ToolStep;
 }
 
 /** 拉取候选模型 */

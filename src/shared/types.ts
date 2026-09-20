@@ -37,6 +37,23 @@ export type ErrorCode =
   | 'ABORTED'
   | 'UNKNOWN';
 
+/** 工具步骤的执行状态 */
+export type ToolStepStatus = 'running' | 'done' | 'error';
+
+/** 一次工具调用的可展示记录 */
+export interface ToolStep {
+  id: string;
+  /** 工具名，如 read_text_file */
+  name: string;
+  /** 模型给出的参数，已序列化为紧凑 JSON 文本（用于展示） */
+  args: string;
+  status: ToolStepStatus;
+  /** 结果摘要：成功为结果前 200 字，失败为错误文案 */
+  result?: string;
+  /** 执行耗时（毫秒）；status 为 running 时无此字段 */
+  elapsedMs?: number;
+}
+
 /** 消息的附加信息，仅 assistant 消息会写入 provider / model / 结束状态 */
 export interface MessageMeta {
   providerId?: ProviderId;
@@ -44,6 +61,10 @@ export interface MessageMeta {
   finishReason?: FinishReason;
   errorCode?: ErrorCode;
   errorText?: string;
+  /** 本轮的工具调用步骤（无工具调用时不写） */
+  steps?: ToolStep[];
+  /** 本轮 agent loop 实际消耗的轮数 */
+  turns?: number;
 }
 
 /** 单条消息；流式期间 content 为「已累积的完整文本」 */
@@ -131,7 +152,8 @@ export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
 
 /** 各 Provider 的默认模型（Ollama 无默认，需用户选择或手填） */
 export const DEFAULT_MODEL: Record<ProviderId, string> = {
-  deepseek: 'deepseek-chat',
+  // 旧 id deepseek-chat 已弃用，统一切到 v4 系列
+  deepseek: 'deepseek-v4-flash',
   ollama: '',
 };
 

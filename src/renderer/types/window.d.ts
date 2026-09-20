@@ -10,6 +10,7 @@ import type {
   ChatErrorEvent,
   ChatSendRequest,
   ChatSendResponse,
+  ChatStepEvent,
   ConfigSaveInput,
   Conversation,
   ConversationSummary,
@@ -38,6 +39,8 @@ export interface MiniAgentApi {
   onChatEnd(listener: (event: ChatEndEvent) => void): () => void;
   /** 订阅异常结束 */
   onChatError(listener: (event: ChatErrorEvent) => void): () => void;
+  /** 订阅工具调用步骤更新 */
+  onChatStep(listener: (event: ChatStepEvent) => void): () => void;
   /** 读取脱敏配置 */
   getConfig(): Promise<PublicConfig>;
   /** 保存配置（apiKey 只进不出） */

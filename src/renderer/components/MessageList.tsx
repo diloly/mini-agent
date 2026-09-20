@@ -8,7 +8,7 @@
  * 全局 error 只在没有消息级错误时才升格为顶部横幅，避免同一句话出现两次。
  */
 import { Alert, Button } from '@heroui/react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 import { useAppStore, isProviderConfigured } from '../store/useAppStore';
 
@@ -25,6 +25,11 @@ export default function MessageList() {
   const streamingMessageId = activeRequestId
     ? streams[activeRequestId]?.assistantMessageId ?? null
     : null;
+  // 工具步骤数量签名：步骤出现 / 变化时需要重新贴底，避免新行溢出可视区
+  const stepsSignature = useMemo(
+    () => messages.map((m) => m.meta?.steps?.length ?? 0).join(','),
+    [messages],
+  );
   const configured = isProviderConfigured(config);
   const hasMessageError = messages.some((item) => Boolean(item.meta?.errorCode));
   const showBanner = Boolean(error) && !hasMessageError;
@@ -37,7 +42,7 @@ export default function MessageList() {
     if (node) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [messages, streamingMessageId]);
+  }, [messages, streamingMessageId, stepsSignature]);
 
   /** 重试：把该条 assistant 消息之前最近的一条用户提问重新发一遍 */
   function handleRetry(index: number): void {

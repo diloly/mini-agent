@@ -11,8 +11,15 @@ import type { MouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-import { ERROR_RETRYABLE, ERROR_TEXT, type Message } from '../../shared/types';
+import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type ToolStep, type ToolStepStatus } from '../../shared/types';
 import { openExternal } from '../lib/api';
+
+/** 工具步骤状态对应的纯文字图标（不引入图片资源，保持简约） */
+const STEP_ICON: Record<ToolStepStatus, string> = {
+  running: '◐',
+  done: '✓',
+  error: '✕',
+};
 
 /** 气泡属性 */
 export interface MessageBubbleProps {
@@ -49,10 +56,30 @@ export default function MessageBubble(props: MessageBubbleProps) {
   const content = message.content;
   const errorCode = message.meta?.errorCode;
   const aborted = message.meta?.finishReason === 'aborted';
+  // 工具步骤统一从 message.meta.steps 读取（流式期间也由 upsertStep 写入），无需新增 prop
+  const steps = message.meta?.steps;
+  const visibleSteps: ToolStep[] = !isUser && Array.isArray(steps) ? steps : [];
 
   return (
     <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`${isUser ? 'max-w-[80%] rounded-[8px] bg-surface-selected px-3 py-2' : 'w-full'}`}>
+        {visibleSteps.length > 0 ? (
+          <div className="mb-2 flex flex-col gap-1 border-l-2 border-line pl-2">
+            {visibleSteps.map((step) => (
+              <div
+                key={step.id}
+                className={`flex items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
+                title={step.result}
+              >
+                <span>{STEP_ICON[step.status]}</span>
+                <span>
+                  {`${step.name}(${step.args})`}
+                  {step.status === 'done' && step.elapsedMs != null ? ` · ${step.elapsedMs}ms` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {isUser ? (
           <p className="whitespace-pre-wrap break-words text-[13px] text-fg">{content}</p>
         ) : content.length > 0 ? (

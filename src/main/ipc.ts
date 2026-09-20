@@ -22,6 +22,7 @@ import {
   type ChannelName,
   type ChatSendRequest,
   type ChatSendResponse,
+  type ChatStepEvent,
   type ConfigSaveInput,
   type ConversationSummary,
   type DeleteConversationRequest,
@@ -44,10 +45,12 @@ import {
   type ModelInfo,
   type ProviderId,
   type PublicConfig,
+  type ToolStep,
 } from '../shared/types';
 import { getProvider, isProviderId } from './providers';
 import { combineSignals } from './providers/sse';
 import { errorMessage, toProviderError, type LlmMessage, type LLMProvider } from './providers/types';
+import { runAgentLoop } from './harness';
 import { hasSecret, isEncryptionAvailable, loadSecret, saveSecret } from './secret';
 import {
   mutateConfig,
@@ -282,7 +285,13 @@ export function createIpcRouter(deps: IpcRouterDeps) {
   async function finalizeAssistantMessage(
     session: ChatSession,
     content: string,
-    meta: { finishReason: FinishReason; errorCode?: ErrorCode; errorText?: string },
+    meta: {
+      finishReason: FinishReason;
+      errorCode?: ErrorCode;
+      errorText?: string;
+      steps?: ToolStep[];
+      turns?: number;
+    },
   ): Promise<void> {
     await mutateConversations((list) => {
       const conversation = list.find((item) => item.id === session.conversationId);
@@ -299,6 +308,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         finishReason: meta.finishReason,
         errorCode: meta.errorCode,
         errorText: meta.errorText,
+        // 工具步骤与轮数仅在确实拿到时才写入，避免把 undefined 盖掉已有值
+        ...(meta.steps !== undefined ? { steps: meta.steps } : {}),
+        ...(meta.turns !== undefined ? { turns: meta.turns } : {}),
       };
       conversation.updatedAt = Date.now();
       ensureConversationTitle(conversation);
@@ -314,14 +326,19 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     // 取 Provider 与读配置必须留在 try 内：一旦抛错而 finally 不执行，
     // running 里就会永久残留一条 requestId，渲染层的 loading 再也退不出去
     let provider: LLMProvider | null = null;
+    // 工具步骤按 id 去重收集，供所有收尾分支（成功 / 中止 / 异常）统一落盘
+    const stepMap = new Map<string, ToolStep>();
     try {
       provider = getProvider(providerId);
       const config = await readConfig();
       const providerConfig = buildProviderConfig(config, providerId);
-      const result = await provider.chatStream(
-        { messages, signal: session.controller.signal },
+      // 换成手写 agent loop：带 tools 反复调模型，直到不再请求工具或轮数耗尽
+      const result = await runAgentLoop({
+        provider,
         providerConfig,
-        {
+        messages,
+        signal: session.controller.signal,
+        callbacks: {
           onDelta: (delta) => {
             if (!delta) {
               return;
@@ -333,9 +350,22 @@ export function createIpcRouter(deps: IpcRouterDeps) {
               delta,
             });
           },
+          onStep: (step) => {
+            // 按 id 覆盖式写入：running → done/error 同一 id 会刷新为最终态
+            stepMap.set(step.id, step);
+            emit(CHANNELS.CHAT_STEP, {
+              requestId: session.requestId,
+              messageId: session.assistantMessageId,
+              step,
+            } satisfies ChatStepEvent);
+          },
         },
-      );
-      await finalizeAssistantMessage(session, result.text, { finishReason: result.finishReason });
+      });
+      await finalizeAssistantMessage(session, result.text, {
+        finishReason: result.finishReason,
+        steps: Array.from(stepMap.values()),
+        turns: result.turns,
+      });
       emit(CHANNELS.CHAT_END, {
         requestId: session.requestId,
         messageId: session.assistantMessageId,
@@ -347,8 +377,11 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         unreachableMessage: provider ? provider.unreachableHint : ERROR_TEXT.UNREACHABLE,
       });
       if (providerError.code === 'ABORTED') {
-        // 用户主动停止：已生成内容照常落盘，不算错误
-        await finalizeAssistantMessage(session, session.text, { finishReason: 'aborted' });
+        // 用户主动停止：已生成内容照常落盘，不算错误（工具步骤也一并保留）
+        await finalizeAssistantMessage(session, session.text, {
+          finishReason: 'aborted',
+          steps: Array.from(stepMap.values()),
+        });
         emit(CHANNELS.CHAT_END, {
           requestId: session.requestId,
           messageId: session.assistantMessageId,
@@ -361,6 +394,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         finishReason: 'error',
         errorCode: providerError.code,
         errorText: providerError.userMessage,
+        steps: Array.from(stepMap.values()),
       });
       emit(CHANNELS.CHAT_ERROR, {
         requestId: session.requestId,

@@ -15,6 +15,7 @@ import {
   type ChatErrorEvent,
   type ChatSendRequest,
   type ChatSendResponse,
+  type ChatStepEvent,
   type ConfigSaveInput,
   type Conversation,
   type ConversationSummary,
@@ -70,6 +71,8 @@ const api = {
     subscribe<ChatEndEvent>(CHANNELS.CHAT_END, listener),
   onChatError: (listener: EventListener<ChatErrorEvent>): (() => void) =>
     subscribe<ChatErrorEvent>(CHANNELS.CHAT_ERROR, listener),
+  onChatStep: (listener: EventListener<ChatStepEvent>): (() => void) =>
+    subscribe<ChatStepEvent>(CHANNELS.CHAT_STEP, listener),
 
   // ---- 配置与模型 ----
   getConfig: (): Promise<PublicConfig> => ipcRenderer.invoke(CHANNELS.CONFIG_GET),

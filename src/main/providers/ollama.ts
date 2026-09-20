@@ -12,8 +12,11 @@ import {
   providerErrorFromStatus,
   readResponseText,
   toProviderError,
+  toOllamaMessages,
+  toWireTools,
   type ChatStreamParams,
   type ChatStreamResult,
+  type LlmToolCall,
   type LLMProvider,
   type ProviderConfig,
   type StreamCallbacks,
@@ -31,7 +34,15 @@ const UNREACHABLE_MESSAGE = '无法连接本地 Ollama 服务，请确认已启�
 interface OllamaChatChunk {
   model?: string;
   created_at?: string;
-  message?: { role?: string; content?: string };
+  message?: {
+    role?: string;
+    content?: string;
+    // Ollama 的 tool_calls 是完整给出（非分片）：直接映射为 LlmToolCall
+    tool_calls?: Array<{
+      id?: string;
+      function?: { name?: string; arguments?: unknown };
+    }>;
+  };
   done?: boolean;
   done_reason?: string;
   error?: string;
@@ -93,16 +104,26 @@ export const ollamaProvider: LLMProvider = {
     const combined = combineSignals([params.signal], REQUEST_TIMEOUT_MS);
     let text = '';
     let finishReason: ChatStreamResult['finishReason'] = 'stop';
+    // Ollama 的 tool_calls 跨行可能重复下发，用 id 去重
+    const toolCalls: LlmToolCall[] = [];
+    const seenToolIds = new Set<string>();
 
     try {
+      // 构造请求体：内部 LlmMessage 必须先映射成协议格式（字段名 tool_call_id 等）
+      const body: Record<string, unknown> = {
+        model: config.model,
+        messages: toOllamaMessages(params.messages),
+        stream: true,
+      };
+      if (params.tools && params.tools.length > 0) {
+        // 内部 ToolDefinition 是扁平的，发请求前包成 OpenAI 的 { type:'function', function:{...} }
+        body.tools = toWireTools(params.tools);
+      }
+
       const response = await fetch(joinApiPath(config.baseUrl || DEFAULT_BASE_URL.ollama, 'api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-        body: JSON.stringify({
-          model: config.model,
-          messages: params.messages,
-          stream: true,
-        }),
+        body: JSON.stringify(body),
         signal: combined.signal,
       });
 
@@ -126,6 +147,24 @@ export const ollamaProvider: LLMProvider = {
               text += delta;
               callbacks.onDelta(delta);
             }
+            // Ollama 的 tool_calls 是完整给出（非分片），但跨行可能重复，用 id 去重
+            const ollamaTools = chunk.message?.tool_calls;
+            if (ollamaTools && ollamaTools.length > 0) {
+              ollamaTools.forEach((tc, i) => {
+                const name = tc.function?.name ?? '';
+                const rawArgs = tc.function?.arguments;
+                // 保持与 DeepSeek 一致的「字符串」契约：对象就 stringify
+                const argsStr = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs ?? {});
+                const id = typeof tc.id === 'string' && tc.id.length > 0 ? tc.id : `tool-${i}`;
+                if (seenToolIds.has(id)) {
+                  return;
+                }
+                seenToolIds.add(id);
+                // 收到 tool_calls 时立即通知 UI「正在调用」
+                callbacks.onToolCallStart?.({ id, name });
+                toolCalls.push({ id, name, arguments: argsStr });
+              });
+            }
             if (chunk.done === true) {
               finishReason = chunk.done_reason === 'length' ? 'length' : 'stop';
             }
@@ -134,7 +173,7 @@ export const ollamaProvider: LLMProvider = {
         combined.signal,
       );
 
-      const result: ChatStreamResult = { text, finishReason };
+      const result: ChatStreamResult = { text, finishReason, toolCalls };
       callbacks.onDone?.(result);
       return result;
     } catch (error) {

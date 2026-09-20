@@ -10,10 +10,31 @@
 import type { ErrorCode, FinishReason, ModelInfo, ProviderId } from '../../shared/types';
 import { ERROR_RETRYABLE, ERROR_TEXT } from '../../shared/types';
 
+/** 暴露给模型的工具声明（JSON Schema，不引 zod） */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** 模型请求调用的一次工具 */
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  /** 原始 JSON 字符串（未解析），执行前由 harness 解析 */
+  arguments: string;
+}
+
 /** 发送给模型的一条消息 */
 export interface LlmMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  /** assistant 消息携带的待执行工具调用 */
+  toolCalls?: LlmToolCall[];
+  /** role==='tool' 时对应的 tool call id */
+  toolCallId?: string;
+  /** role==='tool' 时的工具名 */
+  name?: string;
 }
 
 /**
@@ -34,18 +55,24 @@ export interface StreamCallbacks {
   onDone?: (result: { text: string; finishReason: FinishReason }) => void;
   /** 异常结束回调（抛出前一定先调用） */
   onError?: (error: ProviderError) => void;
+  /** 模型开始请求某个工具时立即回调（用于 UI 立刻显示「正在调用」） */
+  onToolCallStart?: (call: { id: string; name: string }) => void;
 }
 
 /** chatStream 入参 */
 export interface ChatStreamParams {
   messages: LlmMessage[];
   signal: AbortSignal;
+  /** 暴露给模型的工具声明；为空或省略时不带工具 */
+  tools?: ToolDefinition[];
 }
 
 /** chatStream 返回值 */
 export interface ChatStreamResult {
   text: string;
   finishReason: FinishReason;
+  /** 模型本轮请求调用的工具（无工具调用时为空数组） */
+  toolCalls?: LlmToolCall[];
 }
 
 /** 模型服务适配器接口 */
@@ -215,4 +242,110 @@ export function toProviderError(
     return newProviderError('UNKNOWN', error.message.slice(0, 120));
   }
   return newProviderError('UNKNOWN');
+}
+
+/**
+ * 把内部 LlmMessage 映射为 OpenAI 兼容协议的请求体消息。
+ *
+ * 关键字段名差异（最容易写错的点）：
+ * - 内部用 `toolCallId`，协议要求 `tool_call_id`；
+ * - assistant 携带工具调用时，协议要求 `tool_calls: [{ id, type:'function', function:{ name, arguments } }]`；
+ * - content 在仅有 tool_calls 时传 null，避免部分厂商拒绝空字符串。
+ *
+ * 这一步必须在发请求前完成，绝不能直接把内部结构 JSON 化发出去。
+ */
+export function toWireMessages(messages: LlmMessage[]): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    if (message.role === 'tool') {
+      const wire: Record<string, unknown> = {
+        role: 'tool',
+        content: message.content,
+        // 协议字段名是 tool_call_id，不是内部的 toolCallId
+        tool_call_id: message.toolCallId ?? '',
+      };
+      if (typeof message.name === 'string' && message.name.length > 0) {
+        wire.name = message.name;
+      }
+      return wire;
+    }
+    if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
+      return {
+        role: 'assistant',
+        content: message.content.length > 0 ? message.content : null,
+        tool_calls: message.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: call.arguments },
+        })),
+      };
+    }
+    return { role: message.role, content: message.content };
+  });
+}
+
+/**
+ * 把内部 ToolDefinition[] 映射为 OpenAI 兼容协议的 tools 字段。
+ *
+ * 协议要求每个工具包成 `{ type: 'function', function: { name, description, parameters } }`，
+ * 而内部 ToolDefinition 是扁平的 { name, description, parameters }，必须在发请求前包一层。
+ * 与 toWireMessages 同理：不能直接把内部结构 JSON 化发出去。
+ */
+export function toWireTools(tools: ToolDefinition[]): Array<Record<string, unknown>> {
+  return tools.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}
+
+/** 把 JSON 字符串解析为 Ollama 要求的对象；非法或非对象一律回退空对象 */
+function parseArgsObject(raw: string): Record<string, unknown> {
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 把内部 LlmMessage 映射为 Ollama /api/chat 的原生消息格式。
+ * 注意：Ollama 不是 OpenAI 协议，不能复用 toWireMessages。
+ * - tool 消息用 `tool_name` 关联结果（无 tool_call_id）
+ * - assistant 的 function.arguments 必须是对象（不是字符串）
+ * - assistant 的 tool_calls 元素无 id / 无 type，content 用原值（通常为空串，而非 null）
+ */
+export function toOllamaMessages(messages: LlmMessage[]): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    if (message.role === 'tool') {
+      return {
+        role: 'tool',
+        content: message.content,
+        // Ollama 用 tool_name 关联工具结果，而非 OpenAI 的 tool_call_id
+        tool_name: message.name ?? '',
+      };
+    }
+    if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
+      return {
+        role: 'assistant',
+        content: message.content,
+        // Ollama 的 tool_calls 无 id / 无 type 包装，function.arguments 必须是对象
+        tool_calls: message.toolCalls.map((call) => ({
+          function: {
+            name: call.name,
+            arguments: parseArgsObject(call.arguments),
+          },
+        })),
+      };
+    }
+    return { role: message.role, content: message.content };
+  });
 }

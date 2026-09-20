@@ -18,6 +18,7 @@ import type {
   ModelInfo,
   ProviderId,
   PublicConfig,
+  ToolStep,
 } from '../../shared/types';
 import {
   abortChat,
@@ -54,6 +55,8 @@ export interface StreamState {
   assistantMessageId: string;
   /** 已累积的文本 */
   text: string;
+  /** 工具调用步骤（全量快照，按 step.id 覆盖）；无工具调用时为空数组 */
+  steps: ToolStep[];
   /** 是否已被丢弃（切换会话 / 卸载后置为 true，后续 delta 不再上屏） */
   discarded: boolean;
 }
@@ -80,6 +83,8 @@ export interface AppState {
   sendMessage: (content: string) => Promise<void>;
   abortActive: () => Promise<void>;
   appendDelta: (requestId: string, delta: string) => void;
+  /** 覆盖式写入某个工具步骤（step.id 相同则替换） */
+  upsertStep: (requestId: string, step: ToolStep) => void;
   finishStream: (requestId: string, content: string, finishReason: FinishReason) => void;
   failStream: (requestId: string, code: ErrorCode, message: string) => void;
   remapOptimisticIds: (
@@ -310,7 +315,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       ],
       streams: {
         ...state.streams,
-        [requestId]: { requestId, conversationId, assistantMessageId, text: '', discarded: false },
+        [requestId]: { requestId, conversationId, assistantMessageId, text: '', steps: [], discarded: false },
       },
       activeRequestId: requestId,
       loading: true,
@@ -368,6 +373,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
+  /**
+   * 覆盖式写入工具步骤：按 requestId 隔离，已丢弃的流直接忽略。
+   * 同步把 steps 写进当前会话对应 assistant 消息的 meta.steps，
+   * 这样 MessageBubble 无需新 prop 即可实时看到步骤（见 4.6）。
+   */
+  upsertStep: (requestId, step) => {
+    set((state) => {
+      const stream = state.streams[requestId];
+      if (!stream || stream.discarded) {
+        return state;
+      }
+      // 按 step.id 覆盖：已存在则替换，否则追加
+      const steps = stream.steps.some((item) => item.id === step.id)
+        ? stream.steps.map((item) => (item.id === step.id ? step : item))
+        : [...stream.steps, step];
+      const isVisible = stream.conversationId === state.activeConversationId;
+      return {
+        // 必须生成新的 messages 数组引用（map），否则步骤更新不会触发重渲染
+        streams: { ...state.streams, [requestId]: { ...stream, steps } },
+        messages: isVisible
+          ? state.messages.map((message) =>
+              message.id === stream.assistantMessageId
+                ? { ...message, meta: { ...(message.meta ?? {}), steps } }
+                : message,
+            )
+          : state.messages,
+      };
+    });
+  },
+
   /** 正常 / 中止结束：写回全文与结束状态 */
   finishStream: (requestId, content, finishReason) => {
     const stream = get().streams[requestId];
@@ -379,7 +414,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         messages: shouldUpdateMessages
           ? state.messages.map((message) =>
               message.id === stream?.assistantMessageId
-                ? { ...message, content, meta: { ...(message.meta ?? {}), finishReason } }
+                ? {
+                    ...message,
+                    content,
+                    meta: { ...(message.meta ?? {}), finishReason, steps: stream.steps },
+                  }
                 : message,
             )
           : state.messages,
@@ -414,6 +453,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
                       finishReason: 'error' as FinishReason,
                       errorCode: code,
                       errorText: message,
+                      steps: stream?.steps ?? [],
                     },
                   }
                 : item,

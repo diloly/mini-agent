@@ -10,7 +10,7 @@ import MessageList from './components/MessageList';
 import SettingsDialog from './components/SettingsDialog';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
-import { onChatChunk, onChatEnd, onChatError, onOpenSettings } from './lib/api';
+import { onChatChunk, onChatEnd, onChatError, onChatStep, onOpenSettings } from './lib/api';
 import { useAppStore } from './store/useAppStore';
 
 export default function App() {
@@ -38,6 +38,9 @@ export default function App() {
     const unsubscribeError = onChatError(({ requestId, code, message }) => {
       useAppStore.getState().failStream(requestId, code, message);
     });
+    const unsubscribeStep = onChatStep(({ requestId, step }) => {
+      useAppStore.getState().upsertStep(requestId, step);
+    });
     const unsubscribeOpenSettings = onOpenSettings(() => {
       useAppStore.getState().setSettingsOpen(true);
     });
@@ -46,6 +49,7 @@ export default function App() {
       unsubscribeChunk();
       unsubscribeEnd();
       unsubscribeError();
+      unsubscribeStep();
       unsubscribeOpenSettings();
     };
   }, []);
