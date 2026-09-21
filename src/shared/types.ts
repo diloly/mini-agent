@@ -1,5 +1,5 @@
 /**
- * 跨进程共享的类型与常量：消息 / 会话 / 配置 / 模型 / 错误码。
+ * 跨进程共享的类型与常量：消息 / 会话 / 配置 / 模型 / 错误码 / 主题。
  *
  * 约束：本文件零依赖，禁止 import 任何 node、electron 或浏览器专有模块；
  * 主进程、preload、渲染层三方均可安全引用。
@@ -7,6 +7,44 @@
 
 /** 已接入的模型服务标识 */
 export type ProviderId = 'deepseek' | 'ollama';
+
+/** 主题偏好：跟随系统 / 强制浅色 / 强制深色 */
+export type ThemeMode = 'system' | 'light' | 'dark';
+
+/** 解析后的实际主题：只有两种，供 html 的 data-theme / class 使用 */
+export type ResolvedTheme = 'light' | 'dark';
+
+/** 主题偏好默认值 */
+export const DEFAULT_THEME_MODE: ThemeMode = 'system';
+
+/** 界面上能看到的主题分组顺序（B 工程师的「外观」面板按这个顺序渲染） */
+export const THEME_MODE_ORDER: ThemeMode[] = ['system', 'light', 'dark'];
+
+/** 主题偏好的展示名 */
+export const THEME_MODE_LABELS: Record<ThemeMode, string> = {
+  system: '跟随系统',
+  light: '浅色',
+  dark: '深色',
+};
+
+/**
+ * 主进程创建窗口时的底色。
+ * 必须与 theme.css ① 段深色块的 --background（#18181b）保持一致，
+ * 否则深色启动时窗口会先露一层白底再被内容覆盖。
+ */
+export const WINDOW_BACKGROUND: Record<ResolvedTheme, string> = {
+  light: '#ffffff',
+  dark: '#18181b',
+};
+
+/**
+ * 校验任意值是否为主题偏好。
+ * config.json 是磁盘上的明文文件、允许被手改，非法值会让渲染层写出
+ * data-theme="xxx" —— 两套变量都不命中，界面会直接失去所有颜色。
+ */
+export function isThemeMode(value: unknown): value is ThemeMode {
+  return value === 'system' || value === 'light' || value === 'dark';
+}
 
 /** 消息角色 */
 export type Role = 'user' | 'assistant' | 'system';
@@ -111,6 +149,8 @@ export interface AppConfig {
   };
   ui: {
     lastConversationId?: string;
+    /** 主题偏好，持久化在 config.json */
+    theme?: ThemeMode;
   };
 }
 
@@ -132,9 +172,10 @@ export interface PublicConfig {
   };
   models: Record<ProviderId, ModelInfo[]>;
   safeStorageAvailable: boolean;
-  /** 界面态：不涉密，用于重启后恢复上次查看的会话 */
+  /** 界面态：不涉密，用于重启后恢复上次查看的会话与主题 */
   ui?: {
     lastConversationId?: string;
+    theme?: ThemeMode;
   };
 }
 

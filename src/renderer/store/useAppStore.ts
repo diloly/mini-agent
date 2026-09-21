@@ -1,5 +1,5 @@
 /**
- * 全局状态：会话 / 消息 / 流式缓冲 / loading / error / 配置。
+ * 全局状态：会话 / 消息 / 流式缓冲 / loading / error / 配置 / 主题。
  *
  * 流式不串流的关键：所有流式状态按 requestId 隔离存放；
  * 切换会话时把进行中的流标记为 discarded，后续 delta 直接丢弃，
@@ -18,6 +18,7 @@ import type {
   ModelInfo,
   ProviderId,
   PublicConfig,
+  ThemeMode,
   ToolStep,
 } from '../../shared/types';
 import {
@@ -32,6 +33,7 @@ import {
   saveConfig,
   sendChat,
 } from '../lib/api';
+import { applyTheme, resolveTheme } from '../lib/theme';
 
 /**
  * 判断当前 Provider 是否已完成配置（渲染层视角）。
@@ -96,6 +98,12 @@ export interface AppState {
   ) => void;
   refreshModels: (providerId: ProviderId) => Promise<void>;
   saveAppConfig: (input: ConfigSaveInput) => Promise<void>;
+  /** 在输入区快速切换模型服务 / 模型，不打开设置弹层 */
+  switchModel: (providerId: ProviderId, model: string) => Promise<void>;
+  /** 在 React 挂载前调用：只取主题落到 DOM，避免首帧先浅后深 */
+  initTheme: () => Promise<void>;
+  /** 切换主题偏好并持久化 */
+  setThemeMode: (mode: ThemeMode) => Promise<void>;
   setSettingsOpen: (open: boolean) => void;
   setError: (error: string | null) => void;
 }
@@ -167,6 +175,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const [config, conversations] = await Promise.all([getConfig(), listConversations()]);
       set({ config, conversations });
+      // 系统模式下启动也要走一次正确解析（此时系统可能是深色）
+      applyTheme(resolveTheme(config.ui?.theme));
       // 优先恢复上次查看的会话；该会话已被删除时顺位取最近更新的一条
       const rememberedId = config.ui?.lastConversationId;
       const remembered = rememberedId
@@ -203,6 +213,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         streams: discardAll(state.streams),
         loading: false,
         activeRequestId: null,
+        // 离开会话时一并清掉全局错误横幅，避免错误提示残留在空态页上
+        error: null,
       }));
       return;
     }
@@ -232,9 +244,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
             );
             return live ? { ...message, content: live.text } : message;
           });
-          const resumed = Object.values(state.streams).find(
-            (item) => !item.discarded && item.conversationId === id,
-          );
+          // 取「最后一条」仍未丢弃的本会话流作为恢复目标。
+          // 注意：findLast 属于 ES2023，本项目 lib 锁在 ES2022，故用等价的 filter(...).at(-1)
+          // （Array.prototype.at 是 ES2022），二者语义一致——都返回最后一个匹配元素。
+          const resumed = Object.values(state.streams)
+            .filter((item) => !item.discarded && item.conversationId === id)
+            .at(-1);
           return {
             messages,
             // 切回仍在生成的会话：重新挂上「生成中」态与可被停止的 requestId
@@ -531,6 +546,52 @@ export const useAppStore = create<AppState>()((set, get) => ({
       await get().refreshModels(config.activeProviderId);
     } catch {
       set({ error: '保存配置失败，请重试' });
+    }
+  },
+
+  /** 快速切换模型：只 patch 目标 provider 的 model 与 activeProviderId，其余字段不动 */
+  switchModel: async (providerId, model) => {
+    const trimmed = model.trim();
+    if (!trimmed) {
+      return;
+    }
+    const payload: ConfigSaveInput = { activeProviderId: providerId };
+    if (providerId === 'deepseek') {
+      payload.deepseek = { model: trimmed };
+    } else {
+      payload.ollama = { model: trimmed };
+    }
+    try {
+      const config = await saveConfig(payload);
+      set({ config, error: null });
+      // 切到某个服务时它的候选列表可能还没拉过，后台补一次，不阻塞交互
+      void get().refreshModels(providerId);
+    } catch {
+      set({ error: '切换模型失败，请重试' });
+    }
+  },
+
+  /**
+   * 首屏主题：必须在 createRoot().render() 之前 await。
+   * 读配置失败时退回「跟随系统」，绝不阻断首屏。
+   */
+  initTheme: async () => {
+    try {
+      const config = await getConfig();
+      applyTheme(resolveTheme(config.ui?.theme));
+    } catch {
+      applyTheme(resolveTheme(undefined));
+    }
+  },
+
+  /** 切换主题：持久化后再落到 DOM，避免出现「界面变了但重启丢失」的假象 */
+  setThemeMode: async (mode) => {
+    try {
+      const config = await saveConfig({ ui: { theme: mode } });
+      set({ config });
+      applyTheme(resolveTheme(config.ui?.theme));
+    } catch {
+      set({ error: '保存外观设置失败，请重试' });
     }
   },
 

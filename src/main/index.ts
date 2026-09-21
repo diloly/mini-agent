@@ -5,9 +5,16 @@
  * 渲染层只能通过 preload 暴露的白名单访问主进程能力。
  */
 import path from 'node:path';
-import { BrowserWindow, Menu, app, session } from 'electron';
+import { BrowserWindow, Menu, app, nativeTheme, session } from 'electron';
 import { createIpcRouter } from './ipc';
-import { ensureStorageReady } from './storage';
+import { ensureStorageReady, readConfig } from './storage';
+import {
+  DEFAULT_THEME_MODE,
+  isThemeMode,
+  WINDOW_BACKGROUND,
+  type ResolvedTheme,
+  type ThemeMode,
+} from '../shared/types';
 
 /** 开发期的渲染层地址（由 electron-vite 注入） */
 const RENDERER_DEV_SERVER_URL = process.env['ELECTRON_RENDERER_URL'];
@@ -28,6 +35,18 @@ const CONTENT_SECURITY_POLICY = [
 /** 当前主窗口 */
 let mainWindow: BrowserWindow | null = null;
 
+/** 窗口底色：跟随主题偏好解析，避免深色启动时露白 */
+let windowBackgroundColor: string = WINDOW_BACKGROUND.light;
+
+/** 把主题偏好解析成实际主题（主进程侧，不依赖 DOM） */
+function resolveThemeForWindow(mode: ThemeMode | undefined): ResolvedTheme {
+  const effective = isThemeMode(mode) ? mode : DEFAULT_THEME_MODE;
+  if (effective === 'system') {
+    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  }
+  return effective;
+}
+
 /** IPC 路由（持有主窗口访问器） */
 const ipcRouter = createIpcRouter({ getMainWindow: () => mainWindow });
 
@@ -40,6 +59,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     title: 'mini-agent',
+    backgroundColor: windowBackgroundColor,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -105,6 +125,10 @@ function applyNavigationGuards(): void {
 /** 应用启动 */
 async function bootstrap(): Promise<void> {
   await ensureStorageReady();
+  // 先按持久化的主题定好窗口底色，再建窗口：show:false + ready-to-show 配合
+  // 这个底色，深色启动时全程不会露白
+  const config = await readConfig();
+  windowBackgroundColor = WINDOW_BACKGROUND[resolveThemeForWindow(config.ui.theme)];
   ipcRouter.register();
   mainWindow = createMainWindow();
 }
@@ -139,6 +163,7 @@ if (!hasSingleInstanceLock) {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+      // 复用模块级 windowBackgroundColor，不重新读盘
       mainWindow = createMainWindow();
     }
   });

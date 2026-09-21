@@ -55,7 +55,14 @@ export default function MessageList() {
   }
 
   return (
-    <div ref={scrollRef} className="h-full w-full overflow-y-auto bg-background">
+    /* overflow-x-hidden 是必需的：只写 overflow-y-auto 时，按 CSS 规范
+       overflow-x 会被隐式计算为 auto，消息内容一旦横向溢出，窗口底部就会冒出
+       一条横向滚动条，并与右侧竖向滚动条在右下角交汇出一块白角（见 theme.css
+       的 ::-webkit-scrollbar-corner）。这里显式关掉横向滚动。 */
+    <div
+      ref={scrollRef}
+      className="h-full w-full overflow-x-hidden overflow-y-auto bg-background"
+    >
       <div className="mx-auto flex min-h-full max-w-[720px] flex-col gap-4 px-4 py-6">
         {showBanner ? (
           <Alert status="danger" className="flex items-start gap-2">

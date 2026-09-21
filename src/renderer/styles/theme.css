@@ -1,6 +1,7 @@
 /* 主题收束层：全仓唯一的色值定义处，也是唯一的组件外观覆盖处。
    四段结构（顺序不可调换）：
      ① 语义变量覆盖 —— 只有本文件允许出现十六进制色值
+     ①′ 交互态压制 —— 输入框 hover 等出厂交互态（必须未分层才能压过 @heroui/styles，见该段注释）
      ② @theme inline 桥接 —— 把语义变量接进 Tailwind 的 --color-* 命名空间
      ③ BEM 覆盖 —— 收束 HeroUI 组件与 Markdown 排版
      ④ 动效压制与滚动条 —— data-reduce-motion=true 时统一关掉过渡
@@ -9,12 +10,35 @@
 
 /* ── ① 语义变量覆盖 ────────────────────────────────────────────────
    未分层声明天然压过 @heroui/styles 的 @layer base，无需堆特异性。
-   :not() 为将来可能的 dark 模式留口子（当前 index.html 锁死 light，等价）。
+   深色主题由下方 :root[data-theme='dark'] / :root.dark 块承接。
 
    上半段是 HeroUI 原生变量（组件本体真正消费的：--foreground / --border /
    --field-* / --radius / --*-shadow / --default …）；
    下半段是本项目别名，让已有的 text-fg / border-line 一行都不用改。      */
+
+/* 与主题无关的 token：两套主题共用，只声明一次 */
+:root {
+  /* 圆角：官方默认 0.5rem 会让 .button 算出 24px，必须收 */
+  --radius: 0.375rem; /* 6px */
+  --field-radius: 0.375rem;
+  --field-border-width: 1px;
+
+  /* 阴影压平：组件自带三层 --*-shadow */
+  --surface-shadow: 0 0 0 0 transparent;
+  --overlay-shadow: 0 0 0 0 transparent;
+  --field-shadow: 0 0 0 0 transparent;
+
+  --focus: var(--accent);
+  --disabled-opacity: 0.5;
+
+  --scrollbar-track: transparent;
+  --scrollbar-width: thin;
+}
+
 :root:not([data-theme='dark']):not(.dark) {
+  /* 原生控件（滚动条 / 表单 / 光标）跟随主题，不再依赖第三方声明 */
+  color-scheme: light;
+
   /* ── HeroUI 原生语义变量 ── */
   --background: #ffffff;
   --foreground: #18181b;
@@ -46,35 +70,213 @@
   --field-foreground: #18181b;
   --field-placeholder: #71717a;
   --field-border: #e4e4e7;
-  --field-border-width: 1px;
   --field-hover: #ffffff;
   --field-focus: #ffffff;
   --field-border-hover: #d4d4d8;
-  --field-border-focus: var(--accent);
+  /* 聚焦不变色（用户明确要求）：与常态边框同色，输入框一聚焦不出现强调色 */
+  --field-border-focus: var(--border);
 
-  /* 圆角：官方默认 0.5rem 会让 .button 算出 24px，必须收 */
-  --radius: 0.375rem; /* 6px */
-  --field-radius: 0.375rem;
-
-  /* 阴影压平：组件自带三层 --*-shadow */
-  --surface-shadow: 0 0 0 0 transparent;
-  --overlay-shadow: 0 0 0 0 transparent;
-  --field-shadow: 0 0 0 0 transparent;
-
-  --focus: var(--accent);
   --link: #18181b;
-  --disabled-opacity: 0.5;
 
   --scrollbar-thumb: #d4d4d8;
-  --scrollbar-track: transparent;
-  --scrollbar-width: thin;
 
-  /* ── 本项目别名：保留，让已有工具类一行都不用改 ── */
+  /* ── 本项目别名：保留，让已有的工具类一行都不用改 ── */
   --background-secondary: #fafafa;
   --fg: var(--foreground);
   --line: var(--border);
   --surface-selected: #e4e4e7;
   --danger-soft: #fef2f2;
+}
+
+/* 深色主题：底色由沉到浅 = 侧栏 < 主区 < 卡片。
+   --background 必须与 shared/types.ts 的 WINDOW_BACKGROUND.dark 保持一致（#18181b），
+   否则深色启动时窗口底色与内容会差一层。 */
+:root[data-theme='dark'],
+:root.dark {
+  /* 原生控件跟随主题：缺失时横竖滚动条交汇的角落在深色下会露出白块 */
+  color-scheme: dark;
+
+  --background: #18181b;
+  --foreground: #ededed;
+
+  --surface: #1f1f23;
+  --surface-foreground: #ededed;
+  --surface-secondary: #27272a;
+  --surface-secondary-foreground: #ededed;
+
+  --border: #2e2e33;
+  --separator: #2e2e33;
+  --muted: #a1a1aa;
+
+  --accent: #3b82f6;
+  --accent-foreground: #ffffff;
+  --danger: #f87171;
+  --danger-foreground: #1a1a1a;
+
+  --default: #27272a;
+  --default-foreground: #ededed;
+
+  --overlay: #202024;
+  --overlay-foreground: #ededed;
+  --backdrop: rgba(0, 0, 0, 0.6);
+
+  --field-background: #1f1f23;
+  --field-foreground: #ededed;
+  --field-placeholder: #71717a;
+  --field-border: #2e2e33;
+  --field-hover: #1f1f23;
+  --field-focus: #1f1f23;
+  --field-border-hover: #3f3f46;
+  /* 聚焦不变色：同上 */
+  --field-border-focus: var(--border);
+
+  --link: #ededed;
+  --scrollbar-thumb: #3f3f46;
+
+  /* 本项目别名 */
+  --background-secondary: #141417;
+  --fg: var(--foreground);
+  --line: var(--border);
+  --surface-selected: #2e2e33;
+  --danger-soft: #2a1618;
+}
+
+/* ── ①′ 输入类控件的交互态压制（未分层） ─────────────────────────────
+   输入框不做 hover 变色：HeroUI 出厂的 field hover 会换一层底色（浅灰），
+   鼠标划过输入框就闪一下背景，与「简约、不要花里胡哨」的基调冲突。
+
+   为什么放在这里而不是 ③ 段：③ 段位于 @layer components，**压不过**
+   @heroui/styles 的 utilities（Tailwind 的 layer 顺序是 components 先于 utilities）；
+   而未分层声明天然优先于所有 @layer（同特异性下）。这是唯一可靠的位置。
+
+   注：本机未安装 @heroui/react（node_modules 里没有该包），无法确认 HeroUI v3
+   实际消费的是哪个 hover token，故这里不赌变量名，直接用显式规则覆盖。      */
+.input:hover,
+.input[data-hovered='true'],
+.textarea:hover,
+.textarea[data-hovered='true'] {
+  background-color: var(--surface);
+  border-color: var(--border);
+}
+
+/* 输入卡片内的输入框底色本就是透明的，hover 同样保持透明（特异性更高，压过上面一条） */
+.composer-box .textarea:hover,
+.composer-box .textarea[data-hovered='true'] {
+  background-color: transparent;
+}
+
+/* 输入类控件聚焦时不变色：不要强调色边框、不要焦点环（用户明确要求）。
+   三重兜底：① 段的 --field-border-focus 已改为 var(--border) 管住变量出口，
+   这里再用显式规则管住组件自身的 :focus / :focus-visible 出口，
+   使聚焦与常态外观完全一致 —— 点进输入框不会再出现蓝色边框。
+
+   必须未分层：③ 段位于 @layer components，压不过任何未分层样式（含第三方的）。 */
+.input:focus,
+.input:focus-visible,
+.input[data-focus-visible='true'],
+.textarea:focus,
+.textarea:focus-visible,
+.textarea[data-focus-visible='true'],
+.select__trigger:focus,
+.select__trigger:focus-visible,
+.select__trigger[data-focus-visible='true'] {
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+/* 深色下的代码高亮：index.css 只引入了 github 浅色主题（github.min.css），
+   深色底上会出现深色文字，所以这里补一套 github-dark 的 token 色。
+
+   两个都必须放在未分层区的原因：
+   ① highlight.js 的样式是未分层 @import 的，而未分层规则优先于所有 @layer，
+      写进 ③ 段的 @layer components 会被它整体压掉；
+   ② 连 background 也要在这里显式清掉 —— hljs 的 `.hljs { background: #fff }`
+      会压过 ③ 段的 `.markdown-body pre code { bg-transparent }`，而下面这套
+      token 色是浅色系的，落在白底上等于看不见。清成 transparent 后
+      透出 pre 自身的 --surface-secondary。 */
+:root[data-theme='dark'] .markdown-body .hljs,
+:root.dark .markdown-body .hljs {
+  color: #c9d1d9;
+  background-color: transparent;
+}
+
+:root[data-theme='dark'] .markdown-body .hljs-comment,
+:root[data-theme='dark'] .markdown-body .hljs-quote,
+:root.dark .markdown-body .hljs-comment,
+:root.dark .markdown-body .hljs-quote {
+  color: #8b949e;
+}
+
+/* 关键字 / 字面量 / 类型 */
+:root[data-theme='dark'] .markdown-body .hljs-keyword,
+:root[data-theme='dark'] .markdown-body .hljs-selector-tag,
+:root[data-theme='dark'] .markdown-body .hljs-literal,
+:root[data-theme='dark'] .markdown-body .hljs-type,
+:root.dark .markdown-body .hljs-keyword,
+:root.dark .markdown-body .hljs-selector-tag,
+:root.dark .markdown-body .hljs-literal,
+:root.dark .markdown-body .hljs-type {
+  color: #ff7b72;
+}
+
+/* 字符串 */
+:root[data-theme='dark'] .markdown-body .hljs-string,
+:root[data-theme='dark'] .markdown-body .hljs-regexp,
+:root[data-theme='dark'] .markdown-body .hljs-addition,
+:root.dark .markdown-body .hljs-string,
+:root.dark .markdown-body .hljs-regexp,
+:root.dark .markdown-body .hljs-addition {
+  color: #a5d6ff;
+}
+
+/* 数字 / 符号 / 元信息 */
+:root[data-theme='dark'] .markdown-body .hljs-number,
+:root[data-theme='dark'] .markdown-body .hljs-symbol,
+:root[data-theme='dark'] .markdown-body .hljs-bullet,
+:root[data-theme='dark'] .markdown-body .hljs-meta,
+:root.dark .markdown-body .hljs-number,
+:root.dark .markdown-body .hljs-symbol,
+:root.dark .markdown-body .hljs-bullet,
+:root.dark .markdown-body .hljs-meta {
+  color: #79c0ff;
+}
+
+/* 标题 / 函数名 / 选择器 */
+:root[data-theme='dark'] .markdown-body .hljs-title,
+:root[data-theme='dark'] .markdown-body .hljs-section,
+:root[data-theme='dark'] .markdown-body .hljs-name,
+:root[data-theme='dark'] .markdown-body .hljs-selector-id,
+:root.dark .markdown-body .hljs-title,
+:root.dark .markdown-body .hljs-section,
+:root.dark .markdown-body .hljs-name,
+:root.dark .markdown-body .hljs-selector-id {
+  color: #d2a8ff;
+}
+
+/* 属性 / 变量 */
+:root[data-theme='dark'] .markdown-body .hljs-attr,
+:root[data-theme='dark'] .markdown-body .hljs-attribute,
+:root[data-theme='dark'] .markdown-body .hljs-variable,
+:root[data-theme='dark'] .markdown-body .hljs-template-variable,
+:root.dark .markdown-body .hljs-attr,
+:root.dark .markdown-body .hljs-attribute,
+:root.dark .markdown-body .hljs-variable,
+:root.dark .markdown-body .hljs-template-variable {
+  color: #ffa657;
+}
+
+/* 内建 / 类名 / 删除行 */
+:root[data-theme='dark'] .markdown-body .hljs-built_in,
+:root[data-theme='dark'] .markdown-body .hljs-class,
+:root.dark .markdown-body .hljs-built_in,
+:root.dark .markdown-body .hljs-class {
+  color: #7ee787;
+}
+
+:root[data-theme='dark'] .markdown-body .hljs-deletion,
+:root.dark .markdown-body .hljs-deletion {
+  color: #ffdcd7;
+  background-color: #67060c;
 }
 
 /* ── ② @theme inline 桥接 ───────────────────────────────────────────
@@ -90,6 +292,7 @@
   --color-fg: var(--fg);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-overlay: var(--overlay);
@@ -146,15 +349,8 @@
     @apply bg-surface-selected text-fg;
   }
 
-  /* 强调色仅用于「输入焦点」，其余位置一律走中性色 */
-  .input,
-  .textarea,
-  .select__trigger {
-    &:focus-visible,
-    &[data-focus-visible='true'] {
-      @apply border-accent ring-1 ring-accent/25;
-    }
-  }
+  /* 输入类控件的聚焦态不再使用强调色（用户明确要求：不想要边框变色）。
+     真正生效的压制在 ①′ 段（未分层）—— 那是唯一能压过第三方出厂 focus 样式的位置。 */
 
   /* 圆角显式写死 8px：rounded-xl 会随 --radius 放大，超过 PRD 的上限 */
   .modal__dialog {
@@ -171,6 +367,17 @@
 
   .modal__footer {
     @apply border-t border-line px-4 py-3;
+  }
+
+  /* 关闭按钮：只留图标 + 悬停底色，去掉出厂的圆角与内边距感 */
+  .modal__close-trigger {
+    @apply rounded-[6px] p-1 text-muted;
+  }
+
+  /* HeroUI 的悬停态用 [data-hovered='true'] 属性，只写 :hover 会漏 */
+  .modal__close-trigger:hover,
+  .modal__close-trigger[data-hovered='true'] {
+    @apply bg-surface-secondary text-fg;
   }
 
   .alert {
@@ -238,6 +445,17 @@
       @apply my-3 border-l-2 border-line pl-3 text-muted;
     }
   }
+
+  /* 输入卡片内的输入框：去掉独立边框/圆角/焦点环，焦点态由外层卡片统一表现 */
+  .composer-box .textarea {
+    @apply rounded-none border-0 bg-transparent shadow-none;
+  }
+
+  /* 特异性 (0,3,0) 压过上面的 .textarea:focus-visible (0,2,0)，focus ring 不会漏出来 */
+  .composer-box .textarea:focus-visible,
+  .composer-box .textarea[data-focus-visible='true'] {
+    @apply ring-0;
+  }
 }
 
 /* ── ④ 动效压制与滚动条 ─────────────────────────────────────────────
@@ -253,19 +471,25 @@
 }
 
 /* 滚动条：不再用 `*` 选择器（特异性 (0,0,0) 会被 HeroUI 的 .scrollbar 工具类压掉），
-   交给改 ① 里的 --scrollbar-* token；下面这段是 Chromium/Electron 需要的私有伪元素补充。 */
-@layer base {
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
+   交给 ① 里的 --scrollbar-* token；下面这段是 Chromium/Electron 需要的私有伪元素补充。
 
-  ::-webkit-scrollbar-thumb {
-    background-color: var(--scrollbar-thumb);
-    border-radius: 4px;
-  }
+   必须写未分层：@layer 内的声明压不过第三方未分层样式（本仓已踩两次的规律）。
+   ::-webkit-scrollbar-corner 是横竖滚动条交汇的那个小方块，不显式声明时会用 UA
+   默认色 —— 深色模式下表现为右下角一块与主题不搭的白块。 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
 
-  ::-webkit-scrollbar-track {
-    background-color: var(--scrollbar-track);
-  }
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-corner {
+  background-color: transparent;
 }

@@ -4,7 +4,7 @@
  * 命名规范：域:动作（小写冒号分隔）。主进程、preload、渲染层三方只从本文件 import，
  * 仓库内禁止出现任何硬编码的通道字符串。
  */
-import type { ErrorCode, FinishReason, ModelInfo, ProviderId, ToolStep } from './types';
+import type { ErrorCode, FinishReason, ModelInfo, ProviderId, ThemeMode, ToolStep } from './types';
 
 /** 全部 IPC 通道名 */
 export const CHANNELS = {
@@ -123,6 +123,10 @@ export interface ConfigSaveInput {
   ollama?: {
     baseUrl?: string;
     model?: string;
+  };
+  /** 界面偏好；目前只有主题，账户相关以后不放这里 */
+  ui?: {
+    theme?: ThemeMode;
   };
 }
 

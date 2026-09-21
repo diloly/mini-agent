@@ -5,6 +5,10 @@
  * - 助手消息：左对齐，走 react-markdown + remark-gfm + rehype-highlight，
  *   全程不使用 dangerouslySetInnerHTML
  * - 错误态：在气泡下方追加 Alert，按 ERROR_RETRYABLE 决定是否给「重试」入口
+ *
+ * 横向溢出：工具步骤行渲染的是 `${name}(${args})`，args 是紧凑 JSON，可能很长
+ * 且不含空格。flex 子项默认 min-width: auto 不会收缩，会把行撑宽、进而顶出
+ * 横向滚动条。故这里逐层加 min-w-0，并让参数文本 break-all 换行。
  */
 import { Alert, Button } from '@heroui/react';
 import type { MouseEvent } from 'react';
@@ -64,15 +68,15 @@ export default function MessageBubble(props: MessageBubbleProps) {
     <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`${isUser ? 'max-w-[80%] rounded-[8px] bg-surface-selected px-3 py-2' : 'w-full'}`}>
         {visibleSteps.length > 0 ? (
-          <div className="mb-2 flex flex-col gap-1 border-l-2 border-line pl-2">
+          <div className="mb-2 flex min-w-0 flex-col gap-1 border-l-2 border-line pl-2">
             {visibleSteps.map((step) => (
               <div
                 key={step.id}
-                className={`flex items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
+                className={`flex min-w-0 items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
                 title={step.result}
               >
-                <span>{STEP_ICON[step.status]}</span>
-                <span>
+                <span className="shrink-0">{STEP_ICON[step.status]}</span>
+                <span className="min-w-0 break-all">
                   {`${step.name}(${step.args})`}
                   {step.status === 'done' && step.elapsedMs != null ? ` · ${step.elapsedMs}ms` : ''}
                 </span>

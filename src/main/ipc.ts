@@ -35,7 +35,9 @@ import {
 import {
   CONTEXT_MESSAGE_LIMIT,
   DEFAULT_CONVERSATION_TITLE,
+  DEFAULT_THEME_MODE,
   ERROR_TEXT,
+  isThemeMode,
   TITLE_MAX_LENGTH,
   type AppConfig,
   type Conversation,
@@ -128,7 +130,7 @@ function toPublicConfig(config: AppConfig): PublicConfig {
     },
     models: { deepseek: [], ollama: [] },
     safeStorageAvailable: isEncryptionAvailable(),
-    ui: { lastConversationId: config.ui.lastConversationId },
+    ui: { lastConversationId: config.ui.lastConversationId, theme: config.ui.theme ?? DEFAULT_THEME_MODE },
   };
 }
 
@@ -229,7 +231,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     const id = typeof request?.id === 'string' ? request.id : '';
     const list = await readConversations();
     const conversation = list.find((item) => item.id === id) ?? null;
-    // 顺手把「最近查看的会话」落盘：渲染层只读不写配置，避免每次切会话多一次磁盘写
+    // 「查看即记忆」：每次读取会话都顺手把 lastConversationId 落盘。
+    // 取舍（已知且接受）：渲染层只读、不写配置，省掉每次切会话一次 IPC 写往返；
+    // 代价是「看过=记过」——用户只是扫一眼也会改变下次启动的恢复目标。
     if (conversation) {
       await mutateConfig((config) => {
         config.ui.lastConversationId = conversation.id;
@@ -551,6 +555,10 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       if (patch.activeProviderId && isProviderId(patch.activeProviderId)) {
         config.activeProviderId = patch.activeProviderId;
       }
+      // 主题偏好：非法值直接忽略（不覆写），避免把 data-theme 写成两套变量都不命中的值
+      if (patch.ui && isThemeMode(patch.ui.theme)) {
+        config.ui.theme = patch.ui.theme;
+      }
       for (const entry of providerPatches) {
         if (!entry.settings) {
           continue;
@@ -614,7 +622,13 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     if (!ALLOWED_EXTERNAL_PROTOCOLS.has(target.protocol)) {
       return { ok: false, reason: `仅允许打开 http/https 链接（收到 ${target.protocol}）` };
     }
-    await shell.openExternal(target.toString());
+    // shell.openExternal 在无默认浏览器 / 系统调用失败时会 reject：
+    // 必须兜住，否则异常会穿透到 invoke，渲染层拿不到结构化的 OpenExternalResult
+    try {
+      await shell.openExternal(target.toString());
+    } catch {
+      return { ok: false, reason: '系统浏览器打开失败' };
+    }
     return { ok: true };
   }
 
@@ -644,10 +658,5 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.APP_OPEN_EXTERNAL, handleOpenExternal);
   }
 
-  /** 引导渲染层打开设置弹层（ER-03） */
-  function requestOpenSettings(): void {
-    emit<void>(CHANNELS.APP_OPEN_SETTINGS, undefined);
-  }
-
-  return { register, requestOpenSettings };
+  return { register };
 }

@@ -1,16 +1,21 @@
 /**
- * 应用根组件：三区布局骨架 + 初始化水合 + 流式事件接管 + 设置弹层挂载点。
+ * 应用根组件：三区布局骨架 + 初始化水合 + 流式事件接管 + 设置弹层挂载点 + 主题监听。
  *
  * 布局：左侧会话栏（固定 260px）+ 右侧主区（顶栏 48px / 消息区自适应 / 输入区）。
  * 本文件只负责编排，具体交互都下沉到 components 下的各个组件。
+ *
+ * 分隔线约定：纵向只保留左侧栏那条竖线（border-r），横向分割线（顶栏 / 输入区）
+ * 一律不加 —— 板块边界靠底色与留白区分。
  */
 import { useEffect, useRef } from 'react';
+import { DEFAULT_THEME_MODE } from '../shared/types';
 import Composer from './components/Composer';
 import MessageList from './components/MessageList';
 import SettingsDialog from './components/SettingsDialog';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import { onChatChunk, onChatEnd, onChatError, onChatStep, onOpenSettings } from './lib/api';
+import { applyTheme, resolveTheme, watchSystemTheme } from './lib/theme';
 import { useAppStore } from './store/useAppStore';
 
 export default function App() {
@@ -25,6 +30,16 @@ export default function App() {
     }
     hydratedRef.current = true;
     void useAppStore.getState().hydrate();
+  }, []);
+
+  // 系统深浅色切换：仅在偏好为「跟随系统」时响应，固定浅/深色时不受影响
+  useEffect(() => {
+    return watchSystemTheme(() => {
+      const mode = useAppStore.getState().config?.ui?.theme ?? DEFAULT_THEME_MODE;
+      if (mode === 'system') {
+        applyTheme(resolveTheme('system'));
+      }
+    });
   }, []);
 
   // 订阅主进程推送；卸载时逐个取消订阅
@@ -56,15 +71,15 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-background text-fg">
-      {/* ① 左侧会话栏：固定 260px */}
+      {/* ① 左侧会话栏：固定 260px。这条竖线是保留的（用户明确要求） */}
       <aside className="w-[260px] shrink-0 border-r border-line">
         <Sidebar />
       </aside>
 
       {/* ② 右侧主区：顶栏 + 消息区 + 输入区 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* 顶栏：固定 48px */}
-        <header className="h-12 shrink-0 border-b border-line px-4">
+        {/* 顶栏：固定 48px；不加下边线，与消息区靠留白区分 */}
+        <header className="h-12 shrink-0 px-4">
           <TopBar />
         </header>
 
@@ -73,8 +88,8 @@ export default function App() {
           <MessageList />
         </main>
 
-        {/* 输入区 */}
-        <footer className="shrink-0 border-t border-line px-4 py-3">
+        {/* 输入区：不加下边线 */}
+        <footer className="shrink-0 px-4 py-3">
           <Composer />
         </footer>
       </div>

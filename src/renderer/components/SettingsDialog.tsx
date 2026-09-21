@@ -1,5 +1,5 @@
 /**
- * 设置弹层：模型服务选择 + Base URL / 模型 / API Key。
+ * 设置弹层：左右分栏（左导航 + 右内容），含「模型」与「外观」两个分组。
  *
  * 安全约定：
  * - API Key 只进不出：渲染层拿不到历史密钥，输入框永远为空；
@@ -20,8 +20,11 @@ import type { ConfigSaveInput } from '../../shared/ipc-channels';
 import {
   DEFAULT_BASE_URL,
   PROVIDER_LABELS,
+  THEME_MODE_LABELS,
+  THEME_MODE_ORDER,
   type ModelInfo,
   type ProviderId,
+  type ThemeMode,
 } from '../../shared/types';
 import { saveConfig } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
@@ -32,6 +35,12 @@ const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
   { id: 'ollama', label: PROVIDER_LABELS.ollama },
 ];
 
+/** 设置分组（顺序即导航顺序） */
+const SETTINGS_SECTIONS: Array<{ id: 'model' | 'appearance'; label: string }> = [
+  { id: 'model', label: '模型' },
+  { id: 'appearance', label: '外观' },
+];
+
 /** 子标题样式 */
 const SECTION_LABEL_CLASS = 'mb-1 block text-[12px] text-muted';
 
@@ -39,6 +48,7 @@ export default function SettingsDialog() {
   const open = useAppStore((state) => state.settingsOpen);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const refreshModels = useAppStore((state) => state.refreshModels);
+  const setThemeMode = useAppStore((state) => state.setThemeMode);
   const config = useAppStore((state) => state.config);
 
   const [providerId, setProviderId] = useState<ProviderId>('deepseek');
@@ -49,6 +59,8 @@ export default function SettingsDialog() {
   const [ollamaModel, setOllamaModel] = useState('');
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  // 当前所在分组：用户上次停在哪个就保持哪个，弹层重开不强制回「模型」
+  const [section, setSection] = useState<'model' | 'appearance'>('model');
 
   const prevOpenRef = useRef(false);
 
@@ -118,178 +130,251 @@ export default function SettingsDialog() {
   const models = config ? config.models[providerId] ?? [] : [];
   const modelValue = providerId === 'deepseek' ? deepseekModel : ollamaModel;
   const setModelValue = providerId === 'deepseek' ? setDeepseekModel : setOllamaModel;
+  const currentThemeMode: ThemeMode = config?.ui?.theme ?? 'system';
 
   return (
     <Modal>
       <Modal.Backdrop isOpen={open} onOpenChange={handleOpenChange} isDismissable>
-        <Modal.Container size="md" placement="center">
+        <Modal.Container size="lg" placement="center">
           <Modal.Dialog>
             <Modal.Header>
-              <Modal.Heading>模型设置</Modal.Heading>
-              <Modal.CloseTrigger>关闭</Modal.CloseTrigger>
+              <Modal.Heading>设置</Modal.Heading>
+              <Modal.CloseTrigger aria-label="关闭" title="关闭">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </Modal.CloseTrigger>
             </Modal.Header>
 
-            <Modal.Body>
-              {localError ? (
-                <Alert status="danger">
-                  <Alert.Indicator />
-                  <Alert.Content>
-                    <Alert.Title>{localError}</Alert.Title>
-                  </Alert.Content>
-                </Alert>
-              ) : null}
+            <Modal.Body className="p-0">
+              <div className="flex min-h-[400px]">
+                {/* 左：设置分组（靠底色差与间距区分，不加分割线） */}
+                <nav className="w-[152px] shrink-0 bg-background-secondary p-2">
+                  {SETTINGS_SECTIONS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={[
+                        'mb-1 block w-full cursor-pointer rounded-[6px] px-2 py-2 text-left text-[13px]',
+                        section === item.id ? 'bg-surface-selected text-fg' : 'text-muted hover:text-fg',
+                      ].join(' ')}
+                      onClick={() => setSection(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </nav>
 
-              {safeStorageAvailable ? null : (
-                <Alert status="warning">
-                  <Alert.Indicator />
-                  <Alert.Content>
-                    <Alert.Title>当前系统不支持加密存储</Alert.Title>
-                    <Alert.Description>
-                      API Key 只会保存在内存中，重启应用后需要重新填写。
-                    </Alert.Description>
-                  </Alert.Content>
-                </Alert>
-              )}
+                {/* 右：具体设置 */}
+                <div className="min-w-0 flex-1 flex flex-col gap-4 p-4">
+                  {section === 'model' ? (
+                    <>
+                      {localError ? (
+                        <Alert status="danger">
+                          <Alert.Indicator />
+                          <Alert.Content>
+                            <Alert.Title>{localError}</Alert.Title>
+                          </Alert.Content>
+                        </Alert>
+                      ) : null}
 
-              {/* 模型服务选择 */}
-              <div>
-                <Label className={SECTION_LABEL_CLASS}>模型服务</Label>
-                <Select
-                  variant="secondary"
-                  placeholder="选择模型服务"
-                  value={providerId}
-                  onChange={(value: unknown) => {
-                    const next = Array.isArray(value) ? value[0] : value;
-                    if (next === 'deepseek' || next === 'ollama') {
-                      setProviderId(next);
-                    }
-                  }}
-                >
-                  <Select.Trigger>
-                    <Select.Value />
-                    <Select.Indicator />
-                  </Select.Trigger>
-                  <Select.Popover>
-                    <ListBox>
-                      {PROVIDER_OPTIONS.map((option) => (
-                        <ListBox.Item key={option.id} id={option.id}>
-                          <Label>{option.label}</Label>
-                        </ListBox.Item>
-                      ))}
-                    </ListBox>
-                  </Select.Popover>
-                </Select>
-              </div>
+                      {safeStorageAvailable ? null : (
+                        <Alert status="warning">
+                          <Alert.Indicator />
+                          <Alert.Content>
+                            <Alert.Title>当前系统不支持加密存储</Alert.Title>
+                            <Alert.Description>
+                              API Key 只会保存在内存中，重启应用后需要重新填写。
+                            </Alert.Description>
+                          </Alert.Content>
+                        </Alert>
+                      )}
 
-              {/* DeepSeek */}
-              {providerId === 'deepseek' ? (
-                <>
-                  <div>
-                    <Label className={SECTION_LABEL_CLASS}>Base URL</Label>
-                    <Input
-                      variant="secondary"
-                      fullWidth
-                      value={deepseekBaseUrl}
-                      onChange={(event) => setDeepseekBaseUrl(event.target.value)}
-                      placeholder={DEFAULT_BASE_URL.deepseek}
-                    />
-                  </div>
-                  <div>
-                    <Label className={SECTION_LABEL_CLASS}>模型</Label>
-                    <Input
-                      variant="secondary"
-                      fullWidth
-                      value={deepseekModel}
-                      onChange={(event) => setDeepseekModel(event.target.value)}
-                      placeholder="deepseek-chat"
-                    />
-                  </div>
-                  <div>
-                    <Label className={SECTION_LABEL_CLASS}>API Key（只进不出，留空表示不改动）</Label>
-                    <Input
-                      variant="secondary"
-                      fullWidth
-                      type="password"
-                      autoComplete="off"
-                      value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder="sk-..."
-                    />
-                  </div>
-                </>
-              ) : null}
+                      {/* 模型服务选择 */}
+                      <div>
+                        <Label className={SECTION_LABEL_CLASS}>模型服务</Label>
+                        <Select
+                          variant="secondary"
+                          placeholder="选择模型服务"
+                          value={providerId}
+                          onChange={(value: unknown) => {
+                            const next = Array.isArray(value) ? value[0] : value;
+                            if (next === 'deepseek' || next === 'ollama') {
+                              setProviderId(next);
+                            }
+                          }}
+                        >
+                          <Select.Trigger>
+                            <Select.Value />
+                            <Select.Indicator />
+                          </Select.Trigger>
+                          <Select.Popover>
+                            <ListBox>
+                              {PROVIDER_OPTIONS.map((option) => (
+                                <ListBox.Item key={option.id} id={option.id}>
+                                  <Label>{option.label}</Label>
+                                </ListBox.Item>
+                              ))}
+                            </ListBox>
+                          </Select.Popover>
+                        </Select>
+                      </div>
 
-              {/* Ollama */}
-              {providerId === 'ollama' ? (
-                <>
-                  <div>
-                    <Label className={SECTION_LABEL_CLASS}>Base URL</Label>
-                    <Input
-                      variant="secondary"
-                      fullWidth
-                      value={ollamaBaseUrl}
-                      onChange={(event) => setOllamaBaseUrl(event.target.value)}
-                      placeholder={DEFAULT_BASE_URL.ollama}
-                    />
-                  </div>
-                  <div>
-                    <Label className={SECTION_LABEL_CLASS}>模型</Label>
-                    <Input
-                      variant="secondary"
-                      fullWidth
-                      value={ollamaModel}
-                      onChange={(event) => setOllamaModel(event.target.value)}
-                      placeholder="qwen2.5:7b"
-                    />
-                  </div>
-                </>
-              ) : null}
+                      {/* DeepSeek */}
+                      {providerId === 'deepseek' ? (
+                        <>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>Base URL</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={deepseekBaseUrl}
+                              onChange={(event) => setDeepseekBaseUrl(event.target.value)}
+                              placeholder={DEFAULT_BASE_URL.deepseek}
+                            />
+                          </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>模型</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={deepseekModel}
+                              onChange={(event) => setDeepseekModel(event.target.value)}
+                              placeholder="deepseek-chat"
+                            />
+                          </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>API Key（只进不出，留空表示不改动）</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              type="password"
+                              autoComplete="off"
+                              value={apiKey}
+                              onChange={(event) => setApiKey(event.target.value)}
+                              placeholder="sk-..."
+                            />
+                          </div>
+                        </>
+                      ) : null}
 
-              {/* 候选模型 */}
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <Label className="text-[12px] text-muted">
-                    候选模型（{models.length}）
-                  </Label>
-                  <Button size="sm" variant="ghost" onPress={handleFetchModels}>
-                    拉取列表
-                  </Button>
+                      {/* Ollama */}
+                      {providerId === 'ollama' ? (
+                        <>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>Base URL</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={ollamaBaseUrl}
+                              onChange={(event) => setOllamaBaseUrl(event.target.value)}
+                              placeholder={DEFAULT_BASE_URL.ollama}
+                            />
+                          </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>模型</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={ollamaModel}
+                              onChange={(event) => setOllamaModel(event.target.value)}
+                              placeholder="qwen2.5:7b"
+                            />
+                          </div>
+                        </>
+                      ) : null}
+
+                      {/* 候选模型 */}
+                      <div>
+                        <div className="mb-1 flex items-center justify-between">
+                          <Label className="text-[12px] text-muted">
+                            候选模型（{models.length}）
+                          </Label>
+                          <Button size="sm" variant="ghost" onPress={handleFetchModels}>
+                            拉取列表
+                          </Button>
+                        </div>
+                        {models.length === 0 ? (
+                          <p className="text-[12px] text-muted">
+                            暂无候选，可直接在上方的「模型」中手填。
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {models.map((item) => (
+                              <button
+                                key={item.id}
+                                type="button"
+                                className={[
+                                  'cursor-pointer rounded-[6px] border border-line px-2 py-1 text-[12px]',
+                                  item.id === modelValue
+                                    ? 'bg-surface-selected text-fg'
+                                    : 'bg-surface text-muted hover:text-fg',
+                                ].join(' ')}
+                                onClick={() => setModelValue(item.id)}
+                              >
+                                {item.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : null}
+
+                  {section === 'appearance' ? (
+                    <div>
+                      <Label className={SECTION_LABEL_CLASS}>主题</Label>
+                      <div className="flex flex-col gap-1">
+                        {THEME_MODE_ORDER.map((mode) => {
+                          const selected = currentThemeMode === mode;
+                          return (
+                            <button
+                              key={mode}
+                              type="button"
+                              className={[
+                                'flex w-full cursor-pointer items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px]',
+                                selected
+                                  ? 'border-accent bg-surface-selected text-fg'
+                                  : 'border-line text-fg hover:bg-surface-secondary',
+                              ].join(' ')}
+                              onClick={() => void setThemeMode(mode)}
+                            >
+                              <span>{THEME_MODE_LABELS[mode]}</span>
+                              {selected ? <span className="text-[12px] text-muted">当前</span> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-2 text-[12px] text-muted">
+                        选择「跟随系统」时，应用会随 Windows 的浅色/深色设置自动切换。
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
-                {models.length === 0 ? (
-                  <p className="text-[12px] text-muted">
-                    暂无候选，可直接在上方的「模型」中手填。
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {models.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={[
-                          'cursor-pointer rounded-[6px] border border-line px-2 py-1 text-[12px]',
-                          item.id === modelValue
-                            ? 'bg-surface-selected text-fg'
-                            : 'bg-surface text-muted hover:text-fg',
-                        ].join(' ')}
-                        onClick={() => setModelValue(item.id)}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             </Modal.Body>
 
             <Modal.Footer>
-              <div className="flex w-full items-center justify-end gap-2">
-                <Button variant="ghost" onPress={() => setSettingsOpen(false)}>
-                  取消
-                </Button>
-                <Button variant="primary" isPending={saving} onPress={() => void handleSave()}>
-                  保存
-                </Button>
-              </div>
+              {section === 'appearance' ? (
+                <div className="flex w-full items-center justify-end">
+                  <Button variant="primary" onPress={() => setSettingsOpen(false)}>完成</Button>
+                </div>
+              ) : (
+                <div className="flex w-full items-center justify-end gap-2">
+                  <Button variant="ghost" onPress={() => setSettingsOpen(false)}>取消</Button>
+                  <Button variant="primary" isPending={saving} onPress={() => void handleSave()}>
+                    保存
+                  </Button>
+                </div>
+              )}
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>

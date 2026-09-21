@@ -12,6 +12,8 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_CONVERSATION_TITLE,
   DEFAULT_MODEL,
+  DEFAULT_THEME_MODE,
+  isThemeMode,
   type AppConfig,
   type Conversation,
   type ProviderId,
@@ -95,7 +97,7 @@ export function createDefaultConfig(): AppConfig {
         model: DEFAULT_MODEL.ollama,
       },
     },
-    ui: {},
+    ui: { theme: DEFAULT_THEME_MODE },
   };
 }
 
@@ -122,6 +124,8 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
     },
     ui: {
       lastConversationId: raw.ui?.lastConversationId,
+      // 磁盘文件可被手改，非法值必须退回默认，否则 data-theme 会落到两套变量都不命中的值
+      theme: isThemeMode(raw.ui?.theme) ? raw.ui.theme : DEFAULT_THEME_MODE,
     },
   };
 }
