@@ -22,6 +22,10 @@ export const CHANNELS = {
   CONFIG_GET: 'config:get',
   CONFIG_SAVE: 'config:save',
   MODELS_LIST: 'models:list',
+  /** 弹出系统目录选择对话框，取用户选中的工作区目录 */
+  WORKSPACE_PICK: 'workspace:pick',
+  /** 设置某个会话的工作区（root 传 null 表示恢复默认） */
+  CONVERSATION_SET_WORKSPACE: 'conversation:setWorkspace',
   APP_OPEN_SETTINGS: 'app:openSettings',
   /** 用系统默认浏览器打开外链（协议白名单在主进程侧卡死） */
   APP_OPEN_EXTERNAL: 'app:openExternal',
@@ -60,6 +64,12 @@ export interface ChatSendRequest {
   requestId: string;
   conversationId: string;
   content: string;
+  /**
+   * 编辑重发：若提供，主进程会先丢弃该 id 的消息及其之后的全部消息，
+   * 再把本次 user / assistant 消息追加到会话末尾。
+   * 缺省、或会话内找不到该消息时，退化为普通追加。
+   */
+  replaceMessageId?: string;
 }
 
 /** chat:send 立即返回（不等待模型响应结束） */
@@ -124,6 +134,8 @@ export interface ConfigSaveInput {
     baseUrl?: string;
     model?: string;
   };
+  /** 记忆功能总开关；不传表示不改动 */
+  memoryEnabled?: boolean;
   /** 界面偏好；目前只有主题，账户相关以后不放这里 */
   ui?: {
     theme?: ThemeMode;
@@ -143,3 +155,16 @@ export interface OpenExternalResult {
 
 /** 模型列表查询结果（models:list 的返回类型别名，便于扩展） */
 export type ModelListResult = ModelInfo[];
+
+/** 选择工作区目录的结果；用户取消时 canceled 为 true */
+export interface PickWorkspaceResult {
+  canceled: boolean;
+  /** 用户选中的绝对路径；canceled 为 true 时无此字段 */
+  path?: string;
+}
+
+/** 设置会话工作区；root 传 null 表示恢复默认工作区 */
+export interface SetConversationWorkspaceRequest {
+  id: string;
+  root: string | null;
+}

@@ -16,6 +16,7 @@ import type {
   ConversationSummary,
   OkResult,
   OpenExternalResult,
+  PickWorkspaceResult,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 
@@ -49,6 +50,10 @@ export interface MiniAgentApi {
   listModels(providerId: ProviderId): Promise<ModelInfo[]>;
   /** 订阅「打开设置」引导事件 */
   onOpenSettings(listener: () => void): () => void;
+  /** 弹系统目录选择框：用户选中后返回绝对路径，取消时 canceled 为 true */
+  pickWorkspace(): Promise<PickWorkspaceResult>;
+  /** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */
+  setConversationWorkspace(id: string, root: string | null): Promise<OkResult>;
   /** 用系统默认浏览器打开外链（http/https 白名单在主进程侧） */
   openExternal(url: string): Promise<OpenExternalResult>;
 }

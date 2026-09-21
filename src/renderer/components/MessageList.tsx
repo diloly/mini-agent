@@ -18,6 +18,8 @@ export default function MessageList() {
   const activeRequestId = useAppStore((state) => state.activeRequestId);
   const streams = useAppStore((state) => state.streams);
   const config = useAppStore((state) => state.config);
+  // 生成中禁止编辑：编辑会截断并重发，与进行中的流互斥
+  const loading = useAppStore((state) => state.loading);
   const setError = useAppStore((state) => state.setError);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const sendMessage = useAppStore((state) => state.sendMessage);
@@ -52,6 +54,11 @@ export default function MessageList() {
         return;
       }
     }
+  }
+
+  /** 编辑用户消息：交给 store 截断该条及其之后的全部消息，再用新内容重发 */
+  function handleEdit(messageId: string, content: string): void {
+    void sendMessage(content, messageId);
   }
 
   return (
@@ -112,6 +119,7 @@ export default function MessageList() {
               streaming={message.id === streamingMessageId}
               onRetry={() => handleRetry(index)}
               onOpenSettings={() => setSettingsOpen(true)}
+              onEdit={loading ? undefined : handleEdit}
             />
           ))
         )}

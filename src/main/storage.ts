@@ -97,6 +97,7 @@ export function createDefaultConfig(): AppConfig {
         model: DEFAULT_MODEL.ollama,
       },
     },
+    memoryEnabled: true,
     ui: { theme: DEFAULT_THEME_MODE },
   };
 }
@@ -122,6 +123,9 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
         model: rawProviders.ollama?.model ?? fallback.providers.ollama.model,
       },
     },
+    // 磁盘文件可被手改：只认真正的布尔值，缺字段 / 字符串 "false" / 非法值一律回退为默认（开启）
+    memoryEnabled:
+      typeof raw.memoryEnabled === 'boolean' ? raw.memoryEnabled : fallback.memoryEnabled,
     ui: {
       lastConversationId: raw.ui?.lastConversationId,
       // 磁盘文件可被手改，非法值必须退回默认，否则 data-theme 会落到两套变量都不命中的值

@@ -124,6 +124,11 @@ export interface Conversation {
   providerId: ProviderId;
   model: string;
   messages: Message[];
+  /**
+   * 该会话的工作区根目录（绝对路径）。
+   * 缺省时回退到默认工作区；读写文件的工具只允许在该目录内操作。
+   */
+  workspaceRoot?: string;
 }
 
 /** DeepSeek 配置：apiKeyEnc 为 safeStorage 加密后的 base64 密文，永不出主进程 */
@@ -147,6 +152,11 @@ export interface AppConfig {
     deepseek: DeepSeekProviderSettings;
     ollama: OllamaProviderSettings;
   };
+  /**
+   * 记忆功能总开关。关闭后：不做记忆提炼（省掉每轮那次额外模型调用）、
+   * 不向模型注入记忆、也不暴露 append_daily_note 工具。
+   */
+  memoryEnabled: boolean;
   ui: {
     lastConversationId?: string;
     /** 主题偏好，持久化在 config.json */
@@ -172,6 +182,13 @@ export interface PublicConfig {
   };
   models: Record<ProviderId, ModelInfo[]>;
   safeStorageAvailable: boolean;
+  /**
+   * 默认工作区根目录（会话未指定工作区时生效）。
+   * 只用于界面展示 —— 让用户知道「不指定工作区时 agent 会在哪个目录里干活」。
+   */
+  defaultWorkspaceRoot: string;
+  /** 记忆功能总开关（与 AppConfig.memoryEnabled 同值，供设置界面展示） */
+  memoryEnabled: boolean;
   /** 界面态：不涉密，用于重启后恢复上次查看的会话与主题 */
   ui?: {
     lastConversationId?: string;

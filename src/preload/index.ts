@@ -26,6 +26,8 @@ import {
   type OkResult,
   type OpenExternalRequest,
   type OpenExternalResult,
+  type PickWorkspaceResult,
+  type SetConversationWorkspaceRequest,
 } from '../shared/ipc-channels';
 import type { ProviderId, PublicConfig } from '../shared/types';
 
@@ -82,6 +84,15 @@ const api = {
     ipcRenderer.invoke(CHANNELS.MODELS_LIST, { providerId } satisfies ListModelsRequest),
   onOpenSettings: (listener: () => void): (() => void) =>
     subscribe<void>(CHANNELS.APP_OPEN_SETTINGS, () => listener()),
+  /** 弹系统目录选择框，返回用户选中的工作区；用户取消时 canceled 为 true */
+  pickWorkspace: (): Promise<PickWorkspaceResult> =>
+    ipcRenderer.invoke(CHANNELS.WORKSPACE_PICK),
+  /** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */
+  setConversationWorkspace: (id: string, root: string | null): Promise<OkResult> =>
+    ipcRenderer.invoke(
+      CHANNELS.CONVERSATION_SET_WORKSPACE,
+      { id, root } satisfies SetConversationWorkspaceRequest,
+    ),
 
   // ---- 外链 ----
   /** 用系统默认浏览器打开 http/https 链接；协议白名单由主进程卡死 */

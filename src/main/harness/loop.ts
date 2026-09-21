@@ -19,8 +19,8 @@ import type {
   ProviderConfig,
 } from '../providers/types';
 import { createAbortError } from '../providers/sse';
-import { HARNESS_TOOLS, findTool } from './tools';
-import type { ToolResult } from './types';
+import { findTool, harnessToolsFor } from './tools';
+import type { ToolContext, ToolResult } from './types';
 
 /** agent loop 的最大轮数：超过则强制收尾，避免模型无限调用工具 */
 const MAX_TURNS = 8;
@@ -60,6 +60,7 @@ async function executeToolCall(
   steps: ToolStep[],
   callbacks: HarnessCallbacks,
   signal: AbortSignal,
+  toolContext: ToolContext,
 ): Promise<void> {
   // 执行前刷新一次 running 步骤，把模型给出的参数展示出来（覆盖 onToolCallStart 时建的那个空参数步骤）
   callbacks.onStep({
@@ -70,7 +71,7 @@ async function executeToolCall(
   });
 
   const start = Date.now();
-  const tool = findTool(call.name);
+  const tool = findTool(call.name, toolContext);
 
   let result: ToolResult;
   try {
@@ -79,7 +80,7 @@ async function executeToolCall(
       result = { ok: false, text: `未知工具：${call.name}` };
     } else {
       // execute 自行负责解析参数与吞掉异常，返回 { ok, text }
-      result = await tool.execute(call.arguments, signal);
+      result = await tool.execute(call.arguments, signal, toolContext);
     }
   } catch (error) {
     // execute 约定不抛异常，但以防万一漏网，这里兜底，绝不让整轮走到 chat:error
@@ -118,6 +119,7 @@ async function executeToolCall(
  * @param messages 已含本轮 user 提问的上下文
  * @param signal 中止信号
  * @param callbacks 文本增量与工具步骤回调
+ * @param toolContext 工具执行上下文（工作区 / 备份目录 / 会话 id），逐层传给工具
  */
 export async function runAgentLoop(params: {
   provider: LLMProvider;
@@ -125,8 +127,9 @@ export async function runAgentLoop(params: {
   messages: LlmMessage[];
   signal: AbortSignal;
   callbacks: HarnessCallbacks;
+  toolContext: ToolContext;
 }): Promise<HarnessResult> {
-  const { provider, providerConfig, messages, signal, callbacks } = params;
+  const { provider, providerConfig, messages, signal, callbacks, toolContext } = params;
   // 复制一份上下文，loop 内部会不断追加 assistant / tool 消息，不能污染入参
   const convo: LlmMessage[] = [...messages];
 
@@ -142,7 +145,7 @@ export async function runAgentLoop(params: {
     const result = await provider.chatStream(
       {
         messages: convo,
-        tools: HARNESS_TOOLS.map((tool) => tool.definition),
+        tools: harnessToolsFor(toolContext).map((tool) => tool.define(toolContext)),
         signal,
       },
       providerConfig,
@@ -179,7 +182,7 @@ export async function runAgentLoop(params: {
 
     // 依次串行执行每个工具，结果回填——顺序执行更利于 UI 逐步展示
     for (const call of toolCalls) {
-      await executeToolCall(call, convo, steps, callbacks, signal);
+      await executeToolCall(call, convo, steps, callbacks, signal, toolContext);
     }
   }
 

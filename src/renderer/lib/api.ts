@@ -17,6 +17,7 @@ import type {
   ConversationSummary,
   OkResult,
   OpenExternalResult,
+  PickWorkspaceResult,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 import type { MiniAgentApi } from '../types/window';
@@ -128,6 +129,16 @@ export function onChatStep(listener: (event: ChatStepEvent) => void): () => void
 /** 订阅「打开设置」引导；返回取消订阅函数 */
 export function onOpenSettings(listener: () => void): () => void {
   return ensureApi().onOpenSettings(listener);
+}
+
+/** 弹系统目录选择框；用户取消时 canceled 为 true，无 path 字段 */
+export function pickWorkspace(): Promise<PickWorkspaceResult> {
+  return ensureApi().pickWorkspace();
+}
+
+/** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */
+export function setConversationWorkspace(id: string, root: string | null): Promise<OkResult> {
+  return ensureApi().setConversationWorkspace(id, root);
 }
 
 /** 用系统默认浏览器打开外链；非 http/https 会被主进程拒绝，返回 ok:false */

@@ -32,6 +32,8 @@ import {
   listModels,
   saveConfig,
   sendChat,
+  pickWorkspace as apiPickWorkspace,
+  setConversationWorkspace as apiSetConversationWorkspace,
 } from '../lib/api';
 import { applyTheme, resolveTheme } from '../lib/theme';
 
@@ -76,13 +78,16 @@ export interface AppState {
   error: string | null;
   config: PublicConfig | null;
   settingsOpen: boolean;
+  /** 当前会话绑定的工作区根目录；为 null 时表示使用默认工作区 */
+  activeWorkspaceRoot: string | null;
 
   hydrate: () => Promise<void>;
   refreshConversations: () => Promise<void>;
   selectConversation: (id: string | null) => Promise<void>;
   createConversation: () => Promise<void>;
   removeConversation: (id: string) => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+  /** 发送消息；传 replaceMessageId 表示「编辑重发」，先丢弃该消息及其之后的全部消息 */
+  sendMessage: (content: string, replaceMessageId?: string) => Promise<void>;
   abortActive: () => Promise<void>;
   appendDelta: (requestId: string, delta: string) => void;
   /** 覆盖式写入某个工具步骤（step.id 相同则替换） */
@@ -100,10 +105,16 @@ export interface AppState {
   saveAppConfig: (input: ConfigSaveInput) => Promise<void>;
   /** 在输入区快速切换模型服务 / 模型，不打开设置弹层 */
   switchModel: (providerId: ProviderId, model: string) => Promise<void>;
+  /** 弹系统目录框，把选中的目录绑定到当前会话（取消则不改变） */
+  pickWorkspace: () => Promise<void>;
+  /** 解绑当前会话的工作区，回退到默认工作区 */
+  resetWorkspace: () => Promise<void>;
   /** 在 React 挂载前调用：只取主题落到 DOM，避免首帧先浅后深 */
   initTheme: () => Promise<void>;
   /** 切换主题偏好并持久化 */
   setThemeMode: (mode: ThemeMode) => Promise<void>;
+  /** 切换「记忆功能」开关并持久化（关闭后本轮起不再提炼、不注入、不暴露每日笔记工具） */
+  setMemoryEnabled: (enabled: boolean) => Promise<void>;
   setSettingsOpen: (open: boolean) => void;
   setError: (error: string | null) => void;
 }
@@ -169,6 +180,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   error: null,
   config: null,
   settingsOpen: false,
+  activeWorkspaceRoot: null,
 
   /** 启动时水合：拉配置 + 会话列表，并选中最近更新的会话 */
   hydrate: async () => {
@@ -213,6 +225,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         streams: discardAll(state.streams),
         loading: false,
         activeRequestId: null,
+        // 离开会话时工作区一并复位为「默认」
+        activeWorkspaceRoot: null,
         // 离开会话时一并清掉全局错误横幅，避免错误提示残留在空态页上
         error: null,
       }));
@@ -252,6 +266,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
             .at(-1);
           return {
             messages,
+            // 会话绑定的工作区：有则用之，无则回退默认（null）
+            activeWorkspaceRoot: conversation.workspaceRoot ?? null,
             // 切回仍在生成的会话：重新挂上「生成中」态与可被停止的 requestId
             activeRequestId: resumed ? resumed.requestId : state.activeRequestId,
             loading: resumed ? true : state.loading,
@@ -294,8 +310,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   /**
    * 发送一条消息：先乐观插入本地消息，再调 IPC。
    * 主进程返回权威 id 后，用 remapOptimisticIds 把本地临时 id 换成正式 id。
+   *
+   * 传 replaceMessageId 时为「编辑重发」：本地先截断该条及其之后的全部消息（与主进程侧一致），
+   * 再用新内容重发，从而让旧回复立刻从界面消失。
    */
-  sendMessage: async (content) => {
+  sendMessage: async (content, replaceMessageId) => {
     const text = content.trim();
     const conversationId = get().activeConversationId;
     // 准入门按「当前会话是否已有未丢弃的进行中流」判定，而非全局 loading。
@@ -315,30 +334,44 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const assistantMessageId = createRequestId();
     const now = Date.now();
 
-    set((state) => ({
-      messages: [
-        ...state.messages,
-        { id: userMessageId, conversationId, role: 'user', content: text, createdAt: now },
-        {
-          id: assistantMessageId,
-          conversationId,
-          role: 'assistant',
-          content: '',
-          createdAt: now + 1,
-          meta: {},
+    set((state) => {
+      // 编辑重发：本地先丢弃被编辑的那条及其之后的全部消息，与主进程侧的截断保持一致。
+      // 不做这一步的话，旧回复会残留在界面上，直到下一次拉取会话才消失。
+      const cutIndex = replaceMessageId
+        ? state.messages.findIndex((item) => item.id === replaceMessageId)
+        : -1;
+      const base = cutIndex >= 0 ? state.messages.slice(0, cutIndex) : state.messages;
+      return {
+        messages: [
+          ...base,
+          { id: userMessageId, conversationId, role: 'user', content: text, createdAt: now },
+          {
+            id: assistantMessageId,
+            conversationId,
+            role: 'assistant',
+            content: '',
+            createdAt: now + 1,
+            meta: {},
+          },
+        ],
+        streams: {
+          ...state.streams,
+          [requestId]: { requestId, conversationId, assistantMessageId, text: '', steps: [], discarded: false },
         },
-      ],
-      streams: {
-        ...state.streams,
-        [requestId]: { requestId, conversationId, assistantMessageId, text: '', steps: [], discarded: false },
-      },
-      activeRequestId: requestId,
-      loading: true,
-      error: null,
-    }));
+        activeRequestId: requestId,
+        loading: true,
+        error: null,
+      };
+    });
 
     try {
-      const response: ChatSendResponse = await sendChat({ requestId, conversationId, content: text });
+      const response: ChatSendResponse = await sendChat({
+        requestId,
+        conversationId,
+        content: text,
+        // 空值不传：无意义地传空串会让主进程多走一次判断，语义也不清晰
+        ...(replaceMessageId ? { replaceMessageId } : {}),
+      });
       get().remapOptimisticIds(
         requestId,
         userMessageId,
@@ -571,6 +604,39 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /** 弹系统目录框，把选中的目录绑定到当前会话；用户取消则不改 */
+  pickWorkspace: async () => {
+    const id = get().activeConversationId;
+    if (!id) {
+      return;
+    }
+    try {
+      const result = await apiPickWorkspace();
+      // 用户取消或主进程未返回路径：不做任何变更
+      if (result.canceled || !result.path) {
+        return;
+      }
+      await apiSetConversationWorkspace(id, result.path);
+      set({ activeWorkspaceRoot: result.path, error: null });
+    } catch {
+      set({ error: '选择工作区失败，请重试' });
+    }
+  },
+
+  /** 解绑当前会话的工作区，回退到默认工作区 */
+  resetWorkspace: async () => {
+    const id = get().activeConversationId;
+    if (!id) {
+      return;
+    }
+    try {
+      await apiSetConversationWorkspace(id, null);
+      set({ activeWorkspaceRoot: null, error: null });
+    } catch {
+      set({ error: '恢复默认工作区失败，请重试' });
+    }
+  },
+
   /**
    * 首屏主题：必须在 createRoot().render() 之前 await。
    * 读配置失败时退回「跟随系统」，绝不阻断首屏。
@@ -592,6 +658,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
       applyTheme(resolveTheme(config.ui?.theme));
     } catch {
       set({ error: '保存外观设置失败，请重试' });
+    }
+  },
+
+  /** 切换记忆功能：把布尔开关下发给主进程持久化，成功后用回读的脱敏配置覆盖本地 */
+  setMemoryEnabled: async (enabled) => {
+    try {
+      const config = await saveConfig({ memoryEnabled: enabled });
+      set({ config });
+    } catch {
+      set({ error: '保存记忆设置失败，请重试' });
     }
   },
 

@@ -22,7 +22,6 @@ import {
   PROVIDER_LABELS,
   THEME_MODE_LABELS,
   THEME_MODE_ORDER,
-  type ModelInfo,
   type ProviderId,
   type ThemeMode,
 } from '../../shared/types';
@@ -35,10 +34,14 @@ const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
   { id: 'ollama', label: PROVIDER_LABELS.ollama },
 ];
 
+/** 设置分组 id */
+type SettingsSectionId = 'model' | 'appearance' | 'memory';
+
 /** 设置分组（顺序即导航顺序） */
-const SETTINGS_SECTIONS: Array<{ id: 'model' | 'appearance'; label: string }> = [
+const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'model', label: '模型' },
   { id: 'appearance', label: '外观' },
+  { id: 'memory', label: '记忆' },
 ];
 
 /** 子标题样式 */
@@ -49,6 +52,7 @@ export default function SettingsDialog() {
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const refreshModels = useAppStore((state) => state.refreshModels);
   const setThemeMode = useAppStore((state) => state.setThemeMode);
+  const setMemoryEnabled = useAppStore((state) => state.setMemoryEnabled);
   const config = useAppStore((state) => state.config);
 
   const [providerId, setProviderId] = useState<ProviderId>('deepseek');
@@ -60,7 +64,7 @@ export default function SettingsDialog() {
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   // 当前所在分组：用户上次停在哪个就保持哪个，弹层重开不强制回「模型」
-  const [section, setSection] = useState<'model' | 'appearance'>('model');
+  const [section, setSection] = useState<SettingsSectionId>('model');
 
   const prevOpenRef = useRef(false);
 
@@ -131,6 +135,8 @@ export default function SettingsDialog() {
   const modelValue = providerId === 'deepseek' ? deepseekModel : ollamaModel;
   const setModelValue = providerId === 'deepseek' ? setDeepseekModel : setOllamaModel;
   const currentThemeMode: ThemeMode = config?.ui?.theme ?? 'system';
+  // 记忆功能开关：配置缺省（旧版本配置）时按「开启」处理，与主进程默认值一致
+  const memoryEnabled = config?.memoryEnabled ?? true;
 
   return (
     <Modal>
@@ -358,21 +364,55 @@ export default function SettingsDialog() {
                       </p>
                     </div>
                   ) : null}
+
+                  {section === 'memory' ? (
+                    <div>
+                      <Label className={SECTION_LABEL_CLASS}>记忆功能</Label>
+                      <div className="flex flex-col gap-1">
+                        {[
+                          { value: true, label: '开启' },
+                          { value: false, label: '关闭' },
+                        ].map((option) => {
+                          const selected = memoryEnabled === option.value;
+                          return (
+                            <button
+                              key={option.label}
+                              type="button"
+                              className={[
+                                'flex w-full cursor-pointer items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px]',
+                                selected
+                                  ? 'border-accent bg-surface-selected text-fg'
+                                  : 'border-line text-fg hover:bg-surface-secondary',
+                              ].join(' ')}
+                              onClick={() => void setMemoryEnabled(option.value)}
+                            >
+                              <span>{option.label}</span>
+                              {selected ? <span className="text-[12px] text-muted">当前</span> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-2 text-[12px] text-muted">
+                        开启后，应用会在每个会话结束后从当前工作区提炼长期记忆，并在下一轮对话中注入，
+                        同时允许使用「每日笔记」工具；关闭后这三项一并停用，本机已有的记忆文件不会被删除。
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </Modal.Body>
 
             <Modal.Footer>
-              {section === 'appearance' ? (
-                <div className="flex w-full items-center justify-end">
-                  <Button variant="primary" onPress={() => setSettingsOpen(false)}>完成</Button>
-                </div>
-              ) : (
+              {section === 'model' ? (
                 <div className="flex w-full items-center justify-end gap-2">
                   <Button variant="ghost" onPress={() => setSettingsOpen(false)}>取消</Button>
                   <Button variant="primary" isPending={saving} onPress={() => void handleSave()}>
                     保存
                   </Button>
+                </div>
+              ) : (
+                <div className="flex w-full items-center justify-end">
+                  <Button variant="primary" onPress={() => setSettingsOpen(false)}>完成</Button>
                 </div>
               )}
             </Modal.Footer>

@@ -13,6 +13,7 @@
 import { Button, TextArea } from '@heroui/react';
 import { useState, type KeyboardEvent } from 'react';
 import ModelPicker from './ModelPicker';
+import WorkspacePicker from './WorkspacePicker';
 import { useAppStore, isProviderConfigured } from '../store/useAppStore';
 
 export default function Composer() {
@@ -88,7 +89,10 @@ export default function Composer() {
           placeholder={loading ? '生成中…' : '输入消息，Enter 发送，Shift + Enter 换行'}
         />
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          <ModelPicker />
+          <div className="flex min-w-0 items-center gap-1">
+            <WorkspacePicker />
+            <ModelPicker />
+          </div>
           {loading ? (
             <button
               type="button"
