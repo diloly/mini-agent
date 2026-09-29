@@ -63,11 +63,14 @@ import { exportConversationMarkdown } from './conversation-export';
 import { buildMemorySystemMessage, buildWorkspaceRulesMessage, extractWorkspaceMemory, readWorkspaceMemory } from './workspace-memory';
 import { hasSecret, isEncryptionAvailable, loadSecret, saveSecret } from './secret';
 import {
+  mutateAccountMeta,
   mutateConfig,
   mutateConversations,
+  readAccountMeta,
   readConfig,
   readConversations,
 } from './storage';
+import { registerAuthHandlers } from './auth/handlers';
 
 /** 拉取模型列表的统一超时（毫秒） */
 const MODELS_TIMEOUT_MS = 8_000;
@@ -142,8 +145,12 @@ async function refreshWorkspaceMemory(conversation: Conversation): Promise<void>
   }
 }
 
-/** 把配置投影为渲染层可见的脱敏形态 */
-function toPublicConfig(config: AppConfig): PublicConfig {
+/**
+ * 把配置投影为渲染层可见的脱敏形态。
+ * `lastConversationId` 现由**当前账号的 meta** 提供（不再是 config 的字段，见 §7.2）；
+ * 保持同步实现，避免在 mutateConfig 之后引入额外的 async 时序。
+ */
+function toPublicConfig(config: AppConfig, lastConversationId: string | undefined): PublicConfig {
   const deepseek = getProviderSettings(config, 'deepseek');
   const ollama = getProviderSettings(config, 'ollama');
   return {
@@ -163,7 +170,7 @@ function toPublicConfig(config: AppConfig): PublicConfig {
     safeStorageAvailable: isEncryptionAvailable(),
     defaultWorkspaceRoot: getDefaultWorkspaceRoot(),
     memoryEnabled: config.memoryEnabled,
-    ui: { lastConversationId: config.ui.lastConversationId, theme: config.ui.theme ?? DEFAULT_THEME_MODE },
+    ui: { lastConversationId, theme: config.ui.theme ?? DEFAULT_THEME_MODE },
   };
 }
 
@@ -251,8 +258,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     await mutateConversations((list) => {
       list.push(conversation);
     });
-    await mutateConfig((current) => {
-      current.ui.lastConversationId = conversation.id;
+    // lastConversationId 按账号存放（accounts/<id>/meta.json），不再写 config
+    await mutateAccountMeta((meta) => {
+      meta.lastConversationId = conversation.id;
     });
     return conversation;
   }
@@ -264,12 +272,12 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     const id = typeof request?.id === 'string' ? request.id : '';
     const list = await readConversations();
     const conversation = list.find((item) => item.id === id) ?? null;
-    // 「查看即记忆」：每次读取会话都顺手把 lastConversationId 落盘。
+    // 「查看即记忆」：每次读取会话都顺手把 lastConversationId 写进当前账号 meta。
     // 取舍（已知且接受）：渲染层只读、不写配置，省掉每次切会话一次 IPC 写往返；
     // 代价是「看过=记过」——用户只是扫一眼也会改变下次启动的恢复目标。
     if (conversation) {
-      await mutateConfig((config) => {
-        config.ui.lastConversationId = conversation.id;
+      await mutateAccountMeta((meta) => {
+        meta.lastConversationId = conversation.id;
       });
     }
     return conversation;
@@ -292,9 +300,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         session.controller.abort();
       }
     }
-    await mutateConfig((config) => {
-      if (config.ui.lastConversationId === id) {
-        config.ui.lastConversationId = undefined;
+    await mutateAccountMeta((meta) => {
+      if (meta.lastConversationId === id) {
+        meta.lastConversationId = undefined;
       }
     });
     return { ok: true };
@@ -627,7 +635,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
   }
 
   async function handleConfigGet(_event: IpcMainInvokeEvent): Promise<PublicConfig> {
-    return toPublicConfig(await readConfig());
+    const meta = await readAccountMeta();
+    return toPublicConfig(await readConfig(), meta.lastConversationId);
   }
 
   async function handleConfigSave(
@@ -673,7 +682,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       }
     });
 
-    return toPublicConfig(await readConfig());
+    const meta = await readAccountMeta();
+    return toPublicConfig(await readConfig(), meta.lastConversationId);
   }
 
   async function handleModelsList(
@@ -802,6 +812,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.WORKSPACE_PICK, handleWorkspacePick);
     registerHandler(CHANNELS.CONVERSATION_SET_WORKSPACE, handleConversationSetWorkspace);
     registerHandler(CHANNELS.APP_OPEN_EXTERNAL, handleOpenExternal);
+    // 账号相关通道（auth:*）：复用本路由私有的 emit，保证全仓只有一处事件推送实现
+    registerAuthHandlers(emit);
   }
 
   return { register };

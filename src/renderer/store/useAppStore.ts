@@ -7,31 +7,38 @@
  */
 import { create } from 'zustand';
 import type {
+  AuthState,
   ChatSendResponse,
   ConfigSaveInput,
   ConversationSummary,
 } from '../../shared/ipc-channels';
-import type {
-  ErrorCode,
-  FinishReason,
-  Message,
-  ModelInfo,
-  ProviderId,
-  PublicConfig,
-  ThemeMode,
-  ToolStep,
+import {
+  AUTH_ERROR_TEXT,
+  type ErrorCode,
+  type FinishReason,
+  type Message,
+  type ModelInfo,
+  type ProviderId,
+  type PublicConfig,
+  type ThemeMode,
+  type ToolStep,
 } from '../../shared/types';
 import {
   abortChat,
+  clearLocalData as apiClearLocalData,
   createConversation as apiCreateConversation,
   createRequestId,
   deleteConversation as apiDeleteConversation,
+  getAuthState as apiGetAuthState,
   getConfig,
   listConversations,
   getConversation,
   listModels,
   saveConfig,
   sendChat,
+  signIn as apiSignIn,
+  signOut as apiSignOut,
+  signUp as apiSignUp,
   pickWorkspace as apiPickWorkspace,
   setConversationWorkspace as apiSetConversationWorkspace,
 } from '../lib/api';
@@ -50,6 +57,18 @@ export function isProviderConfigured(config: PublicConfig | null): boolean {
     return settings.hasApiKey && settings.model.trim().length > 0;
   }
   return config.providers.ollama.model.trim().length > 0;
+}
+
+/**
+ * 登录态是否「可用」（渲染层视角）。
+ *
+ * authenticated 与 expired 都放行：
+ * - expired 表示本机存有登录态、但续期时网络不可达；离线优先策略下仍进主界面，
+ *   避免一断网就被踢回登录页（凭据真正失效时主进程会推 unauthenticated）。
+ * - null（尚未读取）与 unauthenticated 均视为不可用。
+ */
+export function isAuthed(state: AuthState | null): boolean {
+  return state?.state === 'authenticated' || state?.state === 'expired';
 }
 
 /** 一轮进行中的流式状态 */
@@ -80,6 +99,10 @@ export interface AppState {
   settingsOpen: boolean;
   /** 当前会话绑定的工作区根目录；为 null 时表示使用默认工作区 */
   activeWorkspaceRoot: string | null;
+  /** 当前登录态（脱敏：仅 state / email / userId）；null 表示尚未从主进程取到 */
+  auth: AuthState | null;
+  /** 是否已完成首次登录态读取；false 时界面停在启动态，避免登录页/主界面闪烁 */
+  authChecked: boolean;
 
   hydrate: () => Promise<void>;
   refreshConversations: () => Promise<void>;
@@ -115,6 +138,21 @@ export interface AppState {
   setThemeMode: (mode: ThemeMode) => Promise<void>;
   /** 切换「记忆功能」开关并持久化（关闭后本轮起不再提炼、不注入、不暴露每日笔记工具） */
   setMemoryEnabled: (enabled: boolean) => Promise<void>;
+  /** 启动前读取登录态；必须在 React 挂载前 await（决定首帧显示登录页还是主界面） */
+  initAuth: () => Promise<void>;
+  /** 收敛一次登录态：跨账号切换时清残留、置 authChecked；auth:changed 与各 action 共用 */
+  applyAuthState: (next: AuthState) => void;
+  /** 登录；成功返回 null，失败返回中文错误文案 */
+  signIn: (email: string, password: string, remember: boolean) => Promise<string | null>;
+  /** 注册；返回错误文案（成功为 null）与是否需要邮箱确认 */
+  signUp: (
+    email: string,
+    password: string,
+  ) => Promise<{ error: string | null; needsEmailConfirm: boolean }>;
+  /** 登出（只清登录态，不清会话数据） */
+  signOut: () => Promise<void>;
+  /** 清除本账号本地会话数据；返回被移除的会话数，失败返回 null */
+  clearLocalData: () => Promise<number | null>;
   setSettingsOpen: (open: boolean) => void;
   setError: (error: string | null) => void;
 }
@@ -181,6 +219,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   config: null,
   settingsOpen: false,
   activeWorkspaceRoot: null,
+  auth: null,
+  authChecked: false,
 
   /** 启动时水合：拉配置 + 会话列表，并选中最近更新的会话 */
   hydrate: async () => {
@@ -668,6 +708,129 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ config });
     } catch {
       set({ error: '保存记忆设置失败，请重试' });
+    }
+  },
+
+  /**
+   * 首帧登录态：在 createRoot().render() 之前 await。
+   * 读取失败一律按「未登录」处理（安全默认：宁可让用户重登，也不静默放行）；
+   * 无论成败都要置 authChecked，否则界面会永久停在启动态。
+   */
+  initAuth: async () => {
+    try {
+      const auth = await apiGetAuthState();
+      get().applyAuthState(auth);
+    } catch {
+      set({ auth: { state: 'unauthenticated' }, authChecked: true });
+    }
+  },
+
+  /**
+   * 收敛一次登录态：主进程推送的 auth:changed 与本地各 action 的成功结果都走这里，
+   * 避免多处各自 set 造成状态分裂。
+   *
+   * 从「已登录」跨到「未登录」时，一并清空上一个账号的内存会话数据，防止登出后
+   * 仍短暂看到上一账号的会话（跨账号泄漏）。config 为设备级（主题 / Provider /
+   * 记忆开关），与账号无关，故保留不清；登录后的 hydrate 会按新分区重新拉取。
+   */
+  applyAuthState: (next) => {
+    const wasAuthed = isAuthed(get().auth);
+    const nowAuthed = isAuthed(next);
+    if (wasAuthed && !nowAuthed) {
+      set((state) => ({
+        auth: next,
+        authChecked: true,
+        conversations: [],
+        activeConversationId: null,
+        messages: [],
+        streams: discardAll(state.streams),
+        activeRequestId: null,
+        loading: false,
+        activeWorkspaceRoot: null,
+        // 关闭设置弹层：否则下次登录会被自动重新打开
+        settingsOpen: false,
+        error: null,
+      }));
+      return;
+    }
+    set({ auth: next, authChecked: true });
+  },
+
+  /**
+   * 登录。成功后立即乐观收敛（不等 auth:changed），保证界面即时切到主界面；
+   * 主进程随后推送的同值事件由 applyAuthState 幂等吸收。
+   */
+  signIn: async (email, password, remember) => {
+    try {
+      const result = await apiSignIn({ email, password, remember });
+      if (!result.ok) {
+        return result.message ?? AUTH_ERROR_TEXT.UNKNOWN;
+      }
+      get().applyAuthState(result.state);
+      return null;
+    } catch {
+      return AUTH_ERROR_TEXT.UNKNOWN;
+    }
+  },
+
+  /**
+   * 注册。
+   * - needsEmailConfirm=false：注册即登录（主进程已置登录态），此处主动回读一次登录态
+   *   （signUp 通道不推送 auth:changed），使界面立即进入主界面；
+   * - needsEmailConfirm=true：需去邮箱点确认链接，登录态不变。
+   */
+  signUp: async (email, password) => {
+    try {
+      const result = await apiSignUp({ email, password });
+      if (!result.ok) {
+        return { error: result.message ?? AUTH_ERROR_TEXT.UNKNOWN, needsEmailConfirm: false };
+      }
+      if (!result.needsEmailConfirm) {
+        try {
+          const auth = await apiGetAuthState();
+          get().applyAuthState(auth);
+        } catch {
+          // 回读失败不阻断注册成功：界面下次 initAuth/auth:changed 会自愈
+        }
+      }
+      return { error: null, needsEmailConfirm: result.needsEmailConfirm };
+    } catch {
+      return { error: AUTH_ERROR_TEXT.UNKNOWN, needsEmailConfirm: false };
+    }
+  },
+
+  /** 登出：乐观收敛到「未登录」，界面立即回登录页；主进程推送同值事件幂等吸收 */
+  signOut: async () => {
+    try {
+      const result = await apiSignOut();
+      get().applyAuthState(result.state);
+    } catch {
+      set({ error: AUTH_ERROR_TEXT.UNKNOWN });
+    }
+  },
+
+  /**
+   * 清除本账号本地会话数据。二次确认由调用方负责，这里始终带 confirm=true 下发。
+   * 成功后清空本地会话切片（磁盘数据已由主进程删除），返回被移除的会话数。
+   */
+  clearLocalData: async () => {
+    try {
+      const result = await apiClearLocalData({ confirm: true });
+      if (!result.ok) {
+        return null;
+      }
+      set((state) => ({
+        conversations: [],
+        activeConversationId: null,
+        messages: [],
+        streams: discardAll(state.streams),
+        activeRequestId: null,
+        loading: false,
+        activeWorkspaceRoot: null,
+      }));
+      return result.removedCount;
+    } catch {
+      return null;
     }
   },
 

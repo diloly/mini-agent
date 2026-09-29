@@ -5,18 +5,26 @@
  * 实现由 src/preload/index.ts 通过 contextBridge 注入。
  */
 import type {
+  AuthResult,
+  AuthState,
   ChatChunkEvent,
   ChatEndEvent,
   ChatErrorEvent,
   ChatSendRequest,
   ChatSendResponse,
   ChatStepEvent,
+  ClearLocalDataRequest,
+  ClearLocalDataResult,
   ConfigSaveInput,
   Conversation,
   ConversationSummary,
   OkResult,
   OpenExternalResult,
   PickWorkspaceResult,
+  ResetPasswordRequest,
+  SignInRequest,
+  SignUpRequest,
+  SignUpResult,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 
@@ -56,6 +64,20 @@ export interface MiniAgentApi {
   setConversationWorkspace(id: string, root: string | null): Promise<OkResult>;
   /** 用系统默认浏览器打开外链（http/https 白名单在主进程侧） */
   openExternal(url: string): Promise<OpenExternalResult>;
+  /** 读取当前登录态（脱敏：仅 state / email / userId） */
+  getAuthState(): Promise<AuthState>;
+  /** 注册；needsEmailConfirm 为真表示需去邮箱点确认链接 */
+  signUp(request: SignUpRequest): Promise<SignUpResult>;
+  /** 登录；remember=false 时 session 仅内存持有 */
+  signIn(request: SignInRequest): Promise<AuthResult>;
+  /** 登出（只清登录态，不清会话数据） */
+  signOut(): Promise<AuthResult>;
+  /** 忘记密码：发送重置邮件 */
+  resetPassword(request: ResetPasswordRequest): Promise<AuthResult>;
+  /** 清除本账号本地数据（会话）；confirm 为真才执行 */
+  clearLocalData(request: ClearLocalDataRequest): Promise<ClearLocalDataResult>;
+  /** 订阅登录态变化（token 刷新 / 被登出 / 跨窗口）；返回取消订阅函数 */
+  onAuthChanged(listener: (state: AuthState) => void): () => void;
 }
 
 declare global {

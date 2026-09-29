@@ -15,3 +15,6 @@ Thumbs.db
 !.vscode/extensions.json
 
 *.tsbuildinfo
+
+# 环境变量（含 Supabase 项目地址与 publishable key）；入库 .env.example 作占位
+.env

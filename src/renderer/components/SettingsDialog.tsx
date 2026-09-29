@@ -18,6 +18,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigSaveInput } from '../../shared/ipc-channels';
 import {
+  AUTH_ERROR_TEXT,
   DEFAULT_BASE_URL,
   PROVIDER_LABELS,
   THEME_MODE_LABELS,
@@ -35,13 +36,14 @@ const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
 ];
 
 /** 设置分组 id */
-type SettingsSectionId = 'model' | 'appearance' | 'memory';
+type SettingsSectionId = 'model' | 'appearance' | 'memory' | 'account';
 
 /** 设置分组（顺序即导航顺序） */
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'model', label: '模型' },
   { id: 'appearance', label: '外观' },
   { id: 'memory', label: '记忆' },
+  { id: 'account', label: '账号' },
 ];
 
 /** 子标题样式 */
@@ -54,6 +56,9 @@ export default function SettingsDialog() {
   const setThemeMode = useAppStore((state) => state.setThemeMode);
   const setMemoryEnabled = useAppStore((state) => state.setMemoryEnabled);
   const config = useAppStore((state) => state.config);
+  const auth = useAppStore((state) => state.auth);
+  const signOut = useAppStore((state) => state.signOut);
+  const clearLocalData = useAppStore((state) => state.clearLocalData);
 
   const [providerId, setProviderId] = useState<ProviderId>('deepseek');
   const [deepseekBaseUrl, setDeepseekBaseUrl] = useState(DEFAULT_BASE_URL.deepseek);
@@ -65,6 +70,11 @@ export default function SettingsDialog() {
   const [localError, setLocalError] = useState<string | null>(null);
   // 当前所在分组：用户上次停在哪个就保持哪个，弹层重开不强制回「模型」
   const [section, setSection] = useState<SettingsSectionId>('model');
+  // 账号分组：清除数据的二次确认、操作进行中标记与回显
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
 
   const prevOpenRef = useRef(false);
 
@@ -130,6 +140,46 @@ export default function SettingsDialog() {
     }
   }
 
+  /** 退出登录：成功后门禁会切回登录页；本弹层随主界面卸载 */
+  async function handleSignOut(): Promise<void> {
+    if (accountBusy) {
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      await signOut();
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  /** 清除本账号本地会话数据：首次点击进入二次确认，再次点击才真正执行 */
+  async function handleClearData(): Promise<void> {
+    if (accountBusy) {
+      return;
+    }
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      setAccountError(null);
+      setAccountNotice(null);
+      return;
+    }
+    setAccountBusy(true);
+    setAccountError(null);
+    setAccountNotice(null);
+    try {
+      const removed = await clearLocalData();
+      if (removed === null) {
+        setAccountError(AUTH_ERROR_TEXT.UNKNOWN);
+      } else {
+        setAccountNotice(`已清除 ${removed} 条会话`);
+      }
+    } finally {
+      setConfirmingClear(false);
+      setAccountBusy(false);
+    }
+  }
+
   const safeStorageAvailable = config?.safeStorageAvailable ?? true;
   const models = config ? config.models[providerId] ?? [] : [];
   const modelValue = providerId === 'deepseek' ? deepseekModel : ollamaModel;
@@ -172,7 +222,12 @@ export default function SettingsDialog() {
                         'mb-1 block w-full cursor-pointer rounded-[6px] px-2 py-2 text-left text-[13px]',
                         section === item.id ? 'bg-surface-selected text-fg' : 'text-muted hover:text-fg',
                       ].join(' ')}
-                      onClick={() => setSection(item.id)}
+                      onClick={() => {
+                        setSection(item.id);
+                        // 切走分组即放弃未完成的二次确认：否则用户换个分组再回来，
+                        // 按钮仍显示「确认清除？」而一次点击就直接删数据 —— 等于把二次确认穿透了。
+                        setConfirmingClear(false);
+                      }}
                     >
                       {item.label}
                     </button>
@@ -396,6 +451,67 @@ export default function SettingsDialog() {
                         开启后，应用会在每个会话结束后从当前工作区提炼长期记忆，并在下一轮对话中注入，
                         同时允许使用「每日笔记」工具；关闭后这三项一并停用，本机已有的记忆文件不会被删除。
                       </p>
+                    </div>
+                  ) : null}
+
+                  {section === 'account' ? (
+                    <div className="flex flex-col gap-4">
+                      <div>
+                        <Label className={SECTION_LABEL_CLASS}>当前账号</Label>
+                        <p className="text-[13px] text-fg">{auth?.email ?? '未登录'}</p>
+                        <p className="mt-1 text-[12px] text-muted">
+                          会话数据按账号分区保存在本机；登录服务仅用于身份校验。
+                        </p>
+                      </div>
+
+                      {accountError ? (
+                        <Alert status="danger">
+                          <Alert.Indicator />
+                          <Alert.Content>
+                            <Alert.Title>{accountError}</Alert.Title>
+                          </Alert.Content>
+                        </Alert>
+                      ) : null}
+                      {accountNotice ? (
+                        <p className="rounded-[6px] border border-line bg-surface-secondary px-3 py-2 text-[12px] text-fg">
+                          {accountNotice}
+                        </p>
+                      ) : null}
+
+                      <div>
+                        <Label className={SECTION_LABEL_CLASS}>本地数据</Label>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            isDisabled={accountBusy}
+                            onPress={() => void handleClearData()}
+                          >
+                            {confirmingClear ? '确认清除？' : '清除本账号会话数据'}
+                          </Button>
+                          {confirmingClear ? (
+                            <Button
+                              variant="ghost"
+                              isDisabled={accountBusy}
+                              onPress={() => setConfirmingClear(false)}
+                            >
+                              取消
+                            </Button>
+                          ) : null}
+                        </div>
+                        <p className="mt-2 text-[12px] text-muted">
+                          只删除本机当前账号的会话记录，不影响云端账号与其它账号的数据，清除后不可恢复。
+                        </p>
+                      </div>
+
+                      <div>
+                        <Button
+                          variant="ghost"
+                          isDisabled={accountBusy}
+                          onPress={() => void handleSignOut()}
+                        >
+                          退出登录
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                 </div>

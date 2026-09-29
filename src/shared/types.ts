@@ -260,3 +260,37 @@ export const ERROR_RETRYABLE: Record<ErrorCode, boolean> = {
   ABORTED: false,
   UNKNOWN: true,
 };
+
+/**
+ * 账号相关的用户可见错误码。
+ * 与模型侧 ErrorCode 分开：两者语义不同（一个讲登录、一个讲推理），
+ * 混用会让「AUTH」这类歧义码在两张表里指向不同含义。
+ */
+export type AuthErrorCode =
+  | 'INVALID_EMAIL' // 邮箱格式不合法
+  | 'INVALID_CREDENTIALS' // 邮箱或密码错误
+  | 'EMAIL_NOT_CONFIRMED' // 邮箱尚未确认
+  | 'EMAIL_ALREADY_REGISTERED' // 该邮箱已注册
+  | 'WEAK_PASSWORD' // 密码强度不足
+  | 'NETWORK' // 网络不可达
+  | 'RATE_LIMIT' // 操作过于频繁
+  | 'SERVICE_UNAVAILABLE' // 登录服务未配置 / 不可用
+  | 'UNKNOWN';
+
+/**
+ * 错误码 → 面向用户的简体中文文案（账号体系）。
+ *
+ * 全仓唯一来源：主进程 auth/errors.ts 映射、渲染层登录页展示共用这一张表，
+ * 保证同一句话只有一处定义；组件内不得硬写中文错误句。
+ */
+export const AUTH_ERROR_TEXT: Record<AuthErrorCode, string> = {
+  INVALID_EMAIL: '邮箱格式不正确',
+  INVALID_CREDENTIALS: '邮箱或密码错误',
+  EMAIL_NOT_CONFIRMED: '邮箱尚未确认，请先到邮箱点击确认链接',
+  EMAIL_ALREADY_REGISTERED: '该邮箱已注册，请直接登录',
+  WEAK_PASSWORD: '密码强度不足（至少 6 位）',
+  NETWORK: '无法连接登录服务，请检查网络后重试',
+  RATE_LIMIT: '操作过于频繁，请稍后再试',
+  SERVICE_UNAVAILABLE: '登录服务未配置，请联系管理员',
+  UNKNOWN: '操作失败，请稍后重试',
+};

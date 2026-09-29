@@ -8,6 +8,7 @@ import path from 'node:path';
 import { BrowserWindow, Menu, app, nativeTheme, session } from 'electron';
 import { createIpcRouter } from './ipc';
 import { ensureStorageReady, readConfig } from './storage';
+import { getAuthService } from './auth/handlers';
 import {
   DEFAULT_THEME_MODE,
   isThemeMode,
@@ -129,6 +130,9 @@ async function bootstrap(): Promise<void> {
   // 这个底色，深色启动时全程不会露白
   const config = await readConfig();
   windowBackgroundColor = WINDOW_BACKGROUND[resolveThemeForWindow(config.ui.theme)];
+  // 登录态恢复必须在建窗口之前 await 完成：否则渲染层首帧会先看到「未登录」而闪一下登录页。
+  // 这里与 auth handlers 共用同一个 AuthService 单例（getAuthService）。
+  await getAuthService().restore();
   ipcRouter.register();
   mainWindow = createMainWindow();
 }

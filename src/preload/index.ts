@@ -10,12 +10,16 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type AbortChatRequest,
+  type AuthResult,
+  type AuthState,
   type ChatChunkEvent,
   type ChatEndEvent,
   type ChatErrorEvent,
   type ChatSendRequest,
   type ChatSendResponse,
   type ChatStepEvent,
+  type ClearLocalDataRequest,
+  type ClearLocalDataResult,
   type ConfigSaveInput,
   type Conversation,
   type ConversationSummary,
@@ -27,7 +31,11 @@ import {
   type OpenExternalRequest,
   type OpenExternalResult,
   type PickWorkspaceResult,
+  type ResetPasswordRequest,
   type SetConversationWorkspaceRequest,
+  type SignInRequest,
+  type SignUpRequest,
+  type SignUpResult,
 } from '../shared/ipc-channels';
 import type { ProviderId, PublicConfig } from '../shared/types';
 
@@ -98,6 +106,27 @@ const api = {
   /** 用系统默认浏览器打开 http/https 链接；协议白名单由主进程卡死 */
   openExternal: (url: string): Promise<OpenExternalResult> =>
     ipcRenderer.invoke(CHANNELS.APP_OPEN_EXTERNAL, { url } satisfies OpenExternalRequest),
+
+  // ---- 账号 ----
+  /** 读取当前登录态（脱敏：仅 state / email / userId，绝不含 token） */
+  getAuthState: (): Promise<AuthState> => ipcRenderer.invoke(CHANNELS.AUTH_GET_STATE),
+  /** 注册；needsEmailConfirm 为真表示需去邮箱点确认链接 */
+  signUp: (request: SignUpRequest): Promise<SignUpResult> =>
+    ipcRenderer.invoke(CHANNELS.AUTH_SIGN_UP, request),
+  /** 登录；remember=false 时 session 仅内存持有，不落盘 */
+  signIn: (request: SignInRequest): Promise<AuthResult> =>
+    ipcRenderer.invoke(CHANNELS.AUTH_SIGN_IN, request),
+  /** 登出（只清登录态，不清会话数据） */
+  signOut: (): Promise<AuthResult> => ipcRenderer.invoke(CHANNELS.AUTH_SIGN_OUT),
+  /** 忘记密码：发送重置邮件 */
+  resetPassword: (request: ResetPasswordRequest): Promise<AuthResult> =>
+    ipcRenderer.invoke(CHANNELS.AUTH_RESET_PASSWORD, request),
+  /** 清除本账号本地数据（会话）；confirm 为真才执行 */
+  clearLocalData: (request: ClearLocalDataRequest): Promise<ClearLocalDataResult> =>
+    ipcRenderer.invoke(CHANNELS.AUTH_CLEAR_LOCAL_DATA, request),
+  /** 订阅登录态变化（token 刷新 / 被登出 / 跨窗口）；返回取消订阅函数 */
+  onAuthChanged: (listener: EventListener<AuthState>): (() => void) =>
+    subscribe<AuthState>(CHANNELS.AUTH_CHANGED, listener),
 } as const;
 
 contextBridge.exposeInMainWorld('api', api);

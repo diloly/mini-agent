@@ -4,7 +4,15 @@
  * 命名规范：域:动作（小写冒号分隔）。主进程、preload、渲染层三方只从本文件 import，
  * 仓库内禁止出现任何硬编码的通道字符串。
  */
-import type { ErrorCode, FinishReason, ModelInfo, ProviderId, ThemeMode, ToolStep } from './types';
+import type {
+  AuthErrorCode,
+  ErrorCode,
+  FinishReason,
+  ModelInfo,
+  ProviderId,
+  ThemeMode,
+  ToolStep,
+} from './types';
 
 /** 全部 IPC 通道名 */
 export const CHANNELS = {
@@ -29,6 +37,22 @@ export const CHANNELS = {
   APP_OPEN_SETTINGS: 'app:openSettings',
   /** 用系统默认浏览器打开外链（协议白名单在主进程侧卡死） */
   APP_OPEN_EXTERNAL: 'app:openExternal',
+  /** 读取当前登录态（脱敏：仅 state / email / userId） */
+  AUTH_GET_STATE: 'auth:getState',
+  /** 注册 */
+  AUTH_SIGN_UP: 'auth:signUp',
+  /** 登录 */
+  AUTH_SIGN_IN: 'auth:signIn',
+  /** 登出（只清登录态，不清会话数据） */
+  AUTH_SIGN_OUT: 'auth:signOut',
+  /** 忘记密码（发送重置邮件） */
+  AUTH_RESET_PASSWORD: 'auth:resetPassword',
+  /** 删除账号 */
+  AUTH_DELETE_ACCOUNT: 'auth:deleteAccount',
+  /** 清除本账号本地数据（会话），confirm 为真才执行 */
+  AUTH_CLEAR_LOCAL_DATA: 'auth:clearLocalData',
+  /** 事件：主进程 → 渲染层，登录态变化（token 刷新 / 被登出） */
+  AUTH_CHANGED: 'auth:changed',
 } as const;
 
 /** 通道名联合类型 */
@@ -167,4 +191,66 @@ export interface PickWorkspaceResult {
 export interface SetConversationWorkspaceRequest {
   id: string;
   root: string | null;
+}
+
+/**
+ * 登录态三态；渲染层只拿到这三态 + 邮箱，永不接触 token。
+ * - unauthenticated：从未登录 / 已登出（锁在登录页）
+ * - authenticated：本机有有效登录态（进主界面）
+ * - expired：本机有登录态但续期失败且离线（仍放行进主界面，离线优先）
+ */
+export type AuthStateKind = 'unauthenticated' | 'authenticated' | 'expired';
+
+/** 渲染层可见的登录态（脱敏）：不含任何 token / session 字段 */
+export interface AuthState {
+  state: AuthStateKind;
+  email?: string;
+  /** Supabase user.id；仅用于内部/调试展示，不含任何凭据 */
+  userId?: string;
+}
+
+/** 注册入参 */
+export interface SignUpRequest {
+  email: string;
+  password: string;
+}
+
+/** 登录入参；remember=false 表示「不记住我」→ session 仅内存持有 */
+export interface SignInRequest {
+  email: string;
+  password: string;
+  remember: boolean;
+}
+
+/** 登录 / 登出 / 重置密码结果（脱敏：state 内无 token） */
+export interface AuthResult {
+  ok: boolean;
+  state: AuthState;
+  code?: AuthErrorCode;
+  /** 已是中文（AUTH_ERROR_TEXT[code]） */
+  message?: string;
+}
+
+/** 注册结果：needsEmailConfirm 为 true 表示需去邮箱点确认链接 */
+export interface SignUpResult {
+  ok: boolean;
+  needsEmailConfirm: boolean;
+  code?: AuthErrorCode;
+  message?: string;
+}
+
+/** 忘记密码入参 */
+export interface ResetPasswordRequest {
+  email: string;
+}
+
+/** 清除本账号本地数据；confirm 为真才执行 */
+export interface ClearLocalDataRequest {
+  confirm: boolean;
+}
+
+/** 清除结果；removedCount 为被移除的会话数（用于二次确认后回显） */
+export interface ClearLocalDataResult {
+  ok: boolean;
+  removedCount: number;
 }

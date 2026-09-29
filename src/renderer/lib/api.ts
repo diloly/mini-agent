@@ -6,18 +6,26 @@
  * - requestId 统一由 createRequestId() 生成（crypto.randomUUID，带降级实现）。
  */
 import type {
+  AuthResult,
+  AuthState,
   ChatChunkEvent,
   ChatEndEvent,
   ChatErrorEvent,
   ChatSendRequest,
   ChatSendResponse,
   ChatStepEvent,
+  ClearLocalDataRequest,
+  ClearLocalDataResult,
   ConfigSaveInput,
   Conversation,
   ConversationSummary,
   OkResult,
   OpenExternalResult,
   PickWorkspaceResult,
+  ResetPasswordRequest,
+  SignInRequest,
+  SignUpRequest,
+  SignUpResult,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 import type { MiniAgentApi } from '../types/window';
@@ -144,4 +152,39 @@ export function setConversationWorkspace(id: string, root: string | null): Promi
 /** 用系统默认浏览器打开外链；非 http/https 会被主进程拒绝，返回 ok:false */
 export function openExternal(url: string): Promise<OpenExternalResult> {
   return ensureApi().openExternal(url);
+}
+
+/** 读取当前登录态（脱敏：仅 state / email / userId） */
+export function getAuthState(): Promise<AuthState> {
+  return ensureApi().getAuthState();
+}
+
+/** 注册；needsEmailConfirm 为真表示需去邮箱点确认链接 */
+export function signUp(request: SignUpRequest): Promise<SignUpResult> {
+  return ensureApi().signUp(request);
+}
+
+/** 登录；remember=false 表示 session 仅内存持有 */
+export function signIn(request: SignInRequest): Promise<AuthResult> {
+  return ensureApi().signIn(request);
+}
+
+/** 登出（只清登录态，不清会话数据） */
+export function signOut(): Promise<AuthResult> {
+  return ensureApi().signOut();
+}
+
+/** 忘记密码：发送重置邮件 */
+export function resetPassword(request: ResetPasswordRequest): Promise<AuthResult> {
+  return ensureApi().resetPassword(request);
+}
+
+/** 清除本账号本地数据（会话）；confirm 为真才执行 */
+export function clearLocalData(request: ClearLocalDataRequest): Promise<ClearLocalDataResult> {
+  return ensureApi().clearLocalData(request);
+}
+
+/** 订阅登录态变化；返回取消订阅函数 */
+export function onAuthChanged(listener: (state: AuthState) => void): () => void {
+  return ensureApi().onAuthChanged(listener);
 }
