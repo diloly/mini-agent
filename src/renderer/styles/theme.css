@@ -165,6 +165,25 @@
   background-color: transparent;
 }
 
+/* 输入框随内容自增高，撑到上限后才出滚动条（对齐 WorkBuddy 的手感；用户明确要求）。
+   原状态是固定 min-h-[56px] 不自增高 → 行数一多直接出滚动条、上方内容被藏掉。
+
+   用 field-sizing: content 而不是 JS：这是 Chromium 123+ 的原生能力，本项目
+   Electron 44 内置 Chromium 152，直接可用，不需要逐次测量 scrollHeight 再改写 style.height。
+
+   必须未分层：HeroUI 的 textarea 样式出自 @heroui/styles，而 ③ 段位于 @layer components，
+   压不过未分层的第三方样式（同特异性下未分层天然优先）。
+   height: auto 是防御性的：若 HeroUI 给 textarea 写了显式 height，field-sizing 会失效。
+   overflow-x 必须显式写死：只写 overflow-y 时按 CSS 规范 overflow-x 会被隐式算成 auto，
+   粘贴长串无空格文本时会冒出一条横向滚动条（本仓已在消息区踩过同一个坑）。 */
+.composer-box .textarea {
+  field-sizing: content;
+  height: auto;
+  max-height: 200px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 /* 输入类控件聚焦时不变色：不要强调色边框、不要焦点环（用户明确要求）。
    三重兜底：① 段的 --field-border-focus 已改为 var(--border) 管住变量出口，
    这里再用显式规则管住组件自身的 :focus / :focus-visible 出口，

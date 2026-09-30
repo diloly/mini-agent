@@ -68,7 +68,7 @@ export default function Composer() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[720px]" onKeyDown={handleKeyDown}>
+    <div className="mx-auto w-full max-w-[720px] xl:max-w-[960px] 2xl:max-w-[1120px]" onKeyDown={handleKeyDown}>
       {!configured ? (
         <div className="mb-2 flex items-center justify-between gap-3 rounded-[8px] border border-line bg-surface-secondary px-3 py-2">
           <span className="text-[12px] text-muted">尚未完成模型配置，发送前请先到设置中填写</span>

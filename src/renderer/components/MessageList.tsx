@@ -70,7 +70,7 @@ export default function MessageList() {
       ref={scrollRef}
       className="h-full w-full overflow-x-hidden overflow-y-auto bg-background"
     >
-      <div className="mx-auto flex min-h-full max-w-[720px] flex-col gap-4 px-4 py-6">
+      <div className="mx-auto flex min-h-full max-w-[720px] flex-col gap-4 px-4 py-6 xl:max-w-[960px] 2xl:max-w-[1120px]">
         {showBanner ? (
           <Alert status="danger" className="flex items-start gap-2">
             <Alert.Indicator />
