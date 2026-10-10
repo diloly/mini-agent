@@ -14,6 +14,7 @@ import type {
   ChatSendRequest,
   ChatSendResponse,
   ChatStepEvent,
+  ChatPlanEvent,
   ClearLocalDataRequest,
   ClearLocalDataResult,
   ConfigSaveInput,
@@ -132,6 +133,11 @@ export function onChatError(listener: (event: ChatErrorEvent) => void): () => vo
 /** 订阅工具步骤更新；返回取消订阅函数 */
 export function onChatStep(listener: (event: ChatStepEvent) => void): () => void {
   return ensureApi().onChatStep(listener);
+}
+
+/** 订阅本轮计划清单更新；返回取消订阅函数 */
+export function onChatPlan(listener: (event: ChatPlanEvent) => void): () => void {
+  return ensureApi().onChatPlan(listener);
 }
 
 /** 订阅「打开设置」引导；返回取消订阅函数 */

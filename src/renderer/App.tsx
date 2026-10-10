@@ -22,6 +22,7 @@ import {
   onChatEnd,
   onChatError,
   onChatStep,
+  onChatPlan,
   onOpenSettings,
 } from './lib/api';
 import { applyTheme, resolveTheme, watchSystemTheme } from './lib/theme';
@@ -98,6 +99,9 @@ function MainLayout() {
     const unsubscribeStep = onChatStep(({ requestId, step }) => {
       useAppStore.getState().upsertStep(requestId, step);
     });
+    const unsubscribePlan = onChatPlan(({ requestId, plan }) => {
+      useAppStore.getState().upsertPlan(requestId, plan);
+    });
     const unsubscribeOpenSettings = onOpenSettings(() => {
       useAppStore.getState().setSettingsOpen(true);
     });
@@ -107,6 +111,7 @@ function MainLayout() {
       unsubscribeEnd();
       unsubscribeError();
       unsubscribeStep();
+      unsubscribePlan();
       unsubscribeOpenSettings();
     };
   }, []);

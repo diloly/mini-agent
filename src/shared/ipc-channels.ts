@@ -9,6 +9,7 @@ import type {
   ErrorCode,
   FinishReason,
   ModelInfo,
+  PlanStep,
   ProviderId,
   ThemeMode,
   ToolStep,
@@ -27,6 +28,8 @@ export const CHANNELS = {
   CHAT_ERROR: 'chat:error',
   /** 工具调用步骤更新（全量快照，渲染层按 step.id 覆盖） */
   CHAT_STEP: 'chat:step',
+  /** 计划清单更新（全量快照，渲染层整份覆盖上一版） */
+  CHAT_PLAN: 'chat:plan',
   CONFIG_GET: 'config:get',
   CONFIG_SAVE: 'config:save',
   MODELS_LIST: 'models:list',
@@ -136,6 +139,13 @@ export interface ChatStepEvent {
   requestId: string;
   messageId: string;
   step: ToolStep;
+}
+
+/** 计划清单更新：全量快照（非增量），渲染层直接整份覆盖上一版 */
+export interface ChatPlanEvent {
+  requestId: string;
+  messageId: string;
+  plan: PlanStep[];
 }
 
 /** 拉取候选模型 */

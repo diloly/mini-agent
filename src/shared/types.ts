@@ -90,6 +90,28 @@ export interface ToolStep {
   result?: string;
   /** 执行耗时（毫秒）；status 为 running 时无此字段 */
   elapsedMs?: number;
+  /**
+   * 该步开始时，所属消息正文已累积的字符数。
+   * 主进程在「本轮文本流完、即将执行工具」时打点（同轮的多个工具共用一个值），
+   * 渲染层与 md 镜像据此把工具调用与正文按时间线交错（见 shared/timeline.ts）。
+   * 旧数据无此字段 → 退化为「工具整块 + 正文整块」。
+   */
+  contentOffset?: number;
+}
+
+/** 计划步骤的执行状态 */
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done';
+
+/**
+ * 一条计划步骤：标题 + 状态。
+ * 由模型经 update_plan 工具维护；每次调用都是**整份覆盖更新（非增量）**——
+ * 模型把当前完整的计划清单整体传回，主进程原样替换上一版，不做合并。
+ */
+export interface PlanStep {
+  /** 这一步要做什么，简洁的纯文本 */
+  title: string;
+  /** 这一步的状态（pending 待开始 / in_progress 进行中 / done 已完成） */
+  status: PlanStepStatus;
 }
 
 /** 消息的附加信息，仅 assistant 消息会写入 provider / model / 结束状态 */
@@ -101,6 +123,8 @@ export interface MessageMeta {
   errorText?: string;
   /** 本轮的工具调用步骤（无工具调用时不写） */
   steps?: ToolStep[];
+  /** 本轮 agent 维护的计划清单（整份快照）；模型没建计划时不写 */
+  plan?: PlanStep[];
   /** 本轮 agent loop 实际消耗的轮数 */
   turns?: number;
 }

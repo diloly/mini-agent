@@ -12,7 +12,8 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Conversation, Message, ToolStep } from '../shared/types';
+import type { Conversation, Message, PlanStep, ToolStep } from '../shared/types';
+import { buildTimeline } from '../shared/timeline';
 import { resolveWorkspaceRoot } from './workspace';
 
 /** 文件名里标题的最大长度（超过则截断） */
@@ -140,6 +141,17 @@ function renderSteps(steps: ToolStep[]): string {
   return lines.join('\n');
 }
 
+/** 计划清单块：仅在有计划时调用 */
+function renderPlan(plan: PlanStep[]): string {
+  const lines: string[] = ['**计划**', ''];
+  for (const step of plan) {
+    // 与渲染层一致的纯文字图标：☑ 已完成 / ◐ 进行中 / ☐ 待开始
+    const symbol = step.status === 'done' ? '☑' : step.status === 'in_progress' ? '◐' : '☐';
+    lines.push(`- ${symbol} ${step.title}`);
+  }
+  return lines.join('\n');
+}
+
 /** 渲染整份 Markdown 文本 */
 function renderMarkdown(conversation: Conversation, root: string): string {
   const info = resolveModelInfo(conversation);
@@ -167,19 +179,34 @@ function renderMarkdown(conversation: Conversation, root: string): string {
     parts.push('---', '');
     parts.push(`## ${index + 1}. ${roleLabel(message.role)} · ${formatTime(message.createdAt)}`);
     parts.push('');
-    // content 原样输出，绝不包代码块（assistant 正文本身就是 Markdown）
-    parts.push(message.content);
+    // 正文与工具调用按时间线交错（与渲染层共用 shared/timeline.ts，避免两份逻辑漂移）。
+    // update_plan 已有独立的「计划」块，先摘掉，免得同一件事写两遍。
+    const steps = message.meta?.steps?.filter((step) => step.name !== 'update_plan') ?? [];
+    const timeline = buildTimeline(message.content, steps);
+    // 既无正文也无步骤（timeline 为空）时仍推一次空正文，保持空行结构与改动前一致
+    if (timeline.length === 0) {
+      parts.push(message.content);
+    }
+    for (const item of timeline) {
+      if (item.kind === 'text') {
+        // content 原样输出，绝不包代码块（assistant 正文本身就是 Markdown）
+        parts.push(item.text);
+      } else {
+        parts.push('', renderSteps(item.steps));
+      }
+    }
+
+    // 计划清单单独成块，位于正文与结束原因之间
+    const plan = message.meta?.plan;
+    if (plan && plan.length > 0) {
+      parts.push('', renderPlan(plan));
+    }
 
     const reasonLine = finishReasonLine(message);
     if (reasonLine) {
       // 前面必须空一行：Markdown 里单个换行属于软换行（多数渲染器会并成一行），
       // 否则「（已停止生成）」会直接黏在正文末尾。
       parts.push('', reasonLine);
-    }
-
-    const steps = message.meta?.steps;
-    if (steps && steps.length > 0) {
-      parts.push('', renderSteps(steps));
     }
     parts.push('');
   });

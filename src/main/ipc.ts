@@ -26,6 +26,7 @@ import {
   type ChatSendRequest,
   type ChatSendResponse,
   type ChatStepEvent,
+  type ChatPlanEvent,
   type ConfigSaveInput,
   type ConversationSummary,
   type DeleteConversationRequest,
@@ -50,6 +51,7 @@ import {
   type FinishReason,
   type Message,
   type ModelInfo,
+  type PlanStep,
   type ProviderId,
   type PublicConfig,
   type ToolStep,
@@ -92,6 +94,8 @@ interface ChatSession {
   controller: AbortController;
   /** 主进程侧累积的全文：流式期间不落盘，仅在 end / error / abort 时写一次 */
   text: string;
+  /** 本轮计划清单（整份快照）；模型没调 update_plan 时为 undefined */
+  plan?: PlanStep[];
 }
 
 /** requestId → 进行中的生成任务 */
@@ -335,6 +339,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       errorCode?: ErrorCode;
       errorText?: string;
       steps?: ToolStep[];
+      plan?: PlanStep[];
       turns?: number;
     },
   ): Promise<void> {
@@ -355,6 +360,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         errorText: meta.errorText,
         // 工具步骤与轮数仅在确实拿到时才写入，避免把 undefined 盖掉已有值
         ...(meta.steps !== undefined ? { steps: meta.steps } : {}),
+        // 计划清单同样仅在确实拿到时写入，避免用 undefined 盖掉已有值
+        ...(meta.plan !== undefined ? { plan: meta.plan } : {}),
         ...(meta.turns !== undefined ? { turns: meta.turns } : {}),
       };
       conversation.updatedAt = Date.now();
@@ -423,6 +430,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       await finalizeAssistantMessage(session, result.text, {
         finishReason: result.finishReason,
         steps: Array.from(stepMap.values()),
+        plan: session.plan,
         turns: result.turns,
       });
       emit(CHANNELS.CHAT_END, {
@@ -440,6 +448,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         await finalizeAssistantMessage(session, session.text, {
           finishReason: 'aborted',
           steps: Array.from(stepMap.values()),
+          plan: session.plan,
         });
         emit(CHANNELS.CHAT_END, {
           requestId: session.requestId,
@@ -454,6 +463,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         errorCode: providerError.code,
         errorText: providerError.userMessage,
         steps: Array.from(stepMap.values()),
+        plan: session.plan,
       });
       emit(CHANNELS.CHAT_ERROR, {
         requestId: session.requestId,
@@ -593,6 +603,17 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       text: '',
     };
     running.set(requestId, session);
+
+    // 计划清单推送：update_plan 工具经此把整份快照推给渲染层，并记入 session 供收尾落盘。
+    // 必须等 session 建好后再挂，因为 emitPlan 要填 session.requestId / assistantMessageId。
+    prepared.toolContext.emitPlan = (plan: PlanStep[]) => {
+      session.plan = plan;
+      emit(CHANNELS.CHAT_PLAN, {
+        requestId: session.requestId,
+        messageId: session.assistantMessageId,
+        plan,
+      } satisfies ChatPlanEvent);
+    };
 
     // 5) 立即返回，不等待模型响应
     // 注入两类 system 消息：① 常驻的工作区约定（含每日笔记要求，每轮都要在）；

@@ -20,7 +20,8 @@ import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'r
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type ToolStep, type ToolStepStatus } from '../../shared/types';
+import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type PlanStep, type PlanStepStatus, type ToolStep, type ToolStepStatus } from '../../shared/types';
+import { buildTimeline } from '../../shared/timeline';
 import { openExternal } from '../lib/api';
 
 /** 工具步骤状态对应的纯文字图标（不引入图片资源，保持简约） */
@@ -28,6 +29,13 @@ const STEP_ICON: Record<ToolStepStatus, string> = {
   running: '◐',
   done: '✓',
   error: '✕',
+};
+
+/** 计划步骤状态对应的纯文字图标（与 STEP_ICON 同款写法） */
+const PLAN_ICON: Record<PlanStepStatus, string> = {
+  pending: '☐',
+  in_progress: '◐',
+  done: '☑',
 };
 
 /** 复制结果反馈的展示时长（毫秒） */
@@ -126,13 +134,33 @@ export default function MessageBubble(props: MessageBubbleProps) {
   const aborted = message.meta?.finishReason === 'aborted';
   // 工具步骤统一从 message.meta.steps 读取（流式期间也由 upsertStep 写入），无需新增 prop
   const steps = message.meta?.steps;
-  const visibleSteps: ToolStep[] = !isUser && Array.isArray(steps) ? steps : [];
+  // 摘掉 update_plan：它有自己的计划区块，留在工具日志里会重复且噪音大
+  const visibleSteps: ToolStep[] = !isUser && Array.isArray(steps)
+    ? steps.filter((step) => step.name !== 'update_plan')
+    : [];
+  // 计划清单：模型先「打算做什么」，比「做了什么」更靠上，单独成块
+  const plan = message.meta?.plan;
+  const visiblePlan: PlanStep[] = !isUser && Array.isArray(plan) ? plan : [];
+  // 折叠态摘要用：已完成步数
+  const planDoneCount = visiblePlan.filter((step) => step.status === 'done').length;
+  // 运行中把计划块钉在可视区顶部：MessageList 会持续贴底，不吸顶的计划会被变长的正文顶出视口；
+  // 生成结束即撤销吸附（sticky 需要不透明背景，否则下方正文会从计划块里透出来）
+  const planStickyClass = streaming ? ' sticky top-0 z-10 bg-background' : '';
+  // 正文与工具调用按时间线交错：主进程给每步打了 contentOffset（见 shared/timeline.ts）。
+  // 工具不再单独成块折叠——它发生在正文的哪一段之后，就渲染在哪一段之后。
+  // 用户消息没有工具步骤，timeline 只会是空数组或单段正文，不影响原有渲染。
+  const timeline = buildTimeline(content, visibleSteps);
 
   // 编辑态：仅有用户消息会进入
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState('');
   // 复制按钮的瞬时反馈：idle / done / failed
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle');
+  // 计划块的展开态：null = 跟随生成状态（运行中展开、生成结束自动折叠）；
+  // 用户点过之后转为手动，不再跟随——否则展开历史消息时会立刻被折叠回去。
+  // 工具调用已改为内联进正文时间线，不再有独立的折叠表头，故不需要对应的展开态。
+  const [planExpanded, setPlanExpanded] = useState<boolean | null>(null);
+  const planOpen = planExpanded ?? streaming;
 
   /** 复制正文到剪贴板，并在按钮上短暂反馈结果 */
   async function handleCopy(): Promise<void> {
@@ -222,21 +250,35 @@ export default function MessageBubble(props: MessageBubbleProps) {
        （交叉轴对齐，纵向主轴上 gap-1.5 给气泡与操作行之间留 6px）。 */
     <div className={`group flex w-full flex-col ${isUser ? 'items-end gap-1.5' : ''}`}>
       <div className={`${isUser ? 'max-w-[80%] rounded-[8px] bg-surface-selected px-3 py-2' : 'w-full'}`}>
-        {visibleSteps.length > 0 ? (
-          <div className="mb-2 flex min-w-0 flex-col gap-1 border-l-2 border-line pl-2">
-            {visibleSteps.map((step) => (
-              <div
-                key={step.id}
-                className={`flex min-w-0 items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
-                title={step.result}
-              >
-                <span className="shrink-0">{STEP_ICON[step.status]}</span>
-                <span className="min-w-0 break-all">
-                  {`${step.name}(${step.args})`}
-                  {step.status === 'done' && step.elapsedMs != null ? ` · ${step.elapsedMs}ms` : ''}
+        {visiblePlan.length > 0 ? (
+          <div className={`mb-2 min-w-0 rounded-[6px] border border-line${planStickyClass}`}>
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-2 text-left text-[12px] text-muted hover:text-fg"
+              aria-expanded={planOpen}
+              onClick={() => setPlanExpanded(!planOpen)}
+            >
+              <span className="shrink-0">{planOpen ? '▾' : '▸'}</span>
+              <span className="shrink-0">计划</span>
+              {planOpen ? null : (
+                <span className="min-w-0 truncate">
+                  {`· ${planDoneCount}/${visiblePlan.length} 已完成`}
                 </span>
+              )}
+            </button>
+            {planOpen ? (
+              <div className="flex min-w-0 flex-col gap-1 px-2.5 pb-2">
+                {visiblePlan.map((step, index) => (
+                  <div
+                    key={index}
+                    className={`flex min-w-0 items-start gap-1.5 text-[12px] ${step.status === 'in_progress' ? 'text-fg' : 'text-muted'}`}
+                  >
+                    <span className="shrink-0">{PLAN_ICON[step.status]}</span>
+                    <span className="min-w-0 break-words">{step.title}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
           </div>
         ) : null}
         {isUser ? (
@@ -276,14 +318,47 @@ export default function MessageBubble(props: MessageBubbleProps) {
           ) : (
             <p className="whitespace-pre-wrap break-words text-[13px] text-fg">{content}</p>
           )
-        ) : content.length > 0 ? (
-          <div className="markdown-body break-words" onClick={handleMarkdownClick}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-              {content}
-            </ReactMarkdown>
-            {streaming ? (
-              <span className="ml-[2px] inline-block h-[13px] w-[6px] translate-y-[1px] bg-muted" />
-            ) : null}
+        ) : timeline.length > 0 ? (
+          /* 助手消息：正文与工具调用按时间线交错 —— 工具出现在它实际发生的正文位置之后。
+             工具不再单独折叠，只有上方「计划」块保留吸顶与折叠。
+             分段渲染 Markdown：工具调用边界本身就是段落边界，逐段解析不会丢失结构。 */
+          <div className="flex flex-col gap-2">
+            {timeline.map((item, index) =>
+              item.kind === 'text' ? (
+                <div
+                  key={`text-${index}`}
+                  className="markdown-body break-words"
+                  onClick={handleMarkdownClick}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                    {item.text}
+                  </ReactMarkdown>
+                  {/* 流式光标只挂在最后一段正文末尾；若末尾是工具行，由运行中的 ◐ 表示进度 */}
+                  {streaming && index === timeline.length - 1 ? (
+                    <span className="ml-[2px] inline-block h-[13px] w-[6px] translate-y-[1px] bg-muted" />
+                  ) : null}
+                </div>
+              ) : (
+                <div
+                  key={`steps-${index}`}
+                  className="flex min-w-0 flex-col gap-1 border-l-2 border-line pl-2"
+                >
+                  {item.steps.map((step) => (
+                    <div
+                      key={step.id}
+                      className={`flex min-w-0 items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
+                      title={step.result}
+                    >
+                      <span className="shrink-0">{STEP_ICON[step.status]}</span>
+                      <span className="min-w-0 break-all">
+                        {`${step.name}(${step.args})`}
+                        {step.status === 'done' && step.elapsedMs != null ? ` · ${step.elapsedMs}ms` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ),
+            )}
           </div>
         ) : streaming ? (
           <p className="text-[13px] text-muted">思考中…</p>

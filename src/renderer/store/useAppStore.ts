@@ -21,6 +21,7 @@ import {
   type ProviderId,
   type PublicConfig,
   type ThemeMode,
+  type PlanStep,
   type ToolStep,
 } from '../../shared/types';
 import {
@@ -80,6 +81,8 @@ export interface StreamState {
   text: string;
   /** 工具调用步骤（全量快照，按 step.id 覆盖）；无工具调用时为空数组 */
   steps: ToolStep[];
+  /** 本轮计划清单（全量快照，每次整份覆盖）；模型没建计划时为空数组 */
+  plan: PlanStep[];
   /** 是否已被丢弃（切换会话 / 卸载后置为 true，后续 delta 不再上屏） */
   discarded: boolean;
 }
@@ -115,6 +118,8 @@ export interface AppState {
   appendDelta: (requestId: string, delta: string) => void;
   /** 覆盖式写入某个工具步骤（step.id 相同则替换） */
   upsertStep: (requestId: string, step: ToolStep) => void;
+  /** 覆盖式写入本轮计划清单（整份替换，不是增量） */
+  upsertPlan: (requestId: string, plan: PlanStep[]) => void;
   finishStream: (requestId: string, content: string, finishReason: FinishReason) => void;
   failStream: (requestId: string, code: ErrorCode, message: string) => void;
   remapOptimisticIds: (
@@ -396,7 +401,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         ],
         streams: {
           ...state.streams,
-          [requestId]: { requestId, conversationId, assistantMessageId, text: '', steps: [], discarded: false },
+          [requestId]: { requestId, conversationId, assistantMessageId, text: '', steps: [], plan: [], discarded: false },
         },
         activeRequestId: requestId,
         loading: true,
@@ -491,6 +496,33 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
+  /**
+   * 覆盖式写入本轮计划清单：按 requestId 隔离，已丢弃的流直接忽略。
+   * 同步把 plan 写进当前会话对应 assistant 消息的 meta.plan，
+   * 这样 MessageBubble 无需新 prop 即可实时看到计划。
+   * 整份替换（非增量）：主进程每次推来的 ChatPlanEvent.plan 就是全量快照。
+   */
+  upsertPlan: (requestId, plan) => {
+    set((state) => {
+      const stream = state.streams[requestId];
+      if (!stream || stream.discarded) {
+        return state;
+      }
+      const isVisible = stream.conversationId === state.activeConversationId;
+      return {
+        // 必须生成新的 messages 数组引用（map），否则计划更新不会触发重渲染
+        streams: { ...state.streams, [requestId]: { ...stream, plan } },
+        messages: isVisible
+          ? state.messages.map((message) =>
+              message.id === stream.assistantMessageId
+                ? { ...message, meta: { ...(message.meta ?? {}), plan } }
+                : message,
+            )
+          : state.messages,
+      };
+    });
+  },
+
   /** 正常 / 中止结束：写回全文与结束状态 */
   finishStream: (requestId, content, finishReason) => {
     const stream = get().streams[requestId];
@@ -505,7 +537,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 ? {
                     ...message,
                     content,
-                    meta: { ...(message.meta ?? {}), finishReason, steps: stream.steps },
+                    meta: {
+                      ...(message.meta ?? {}),
+                      finishReason,
+                      steps: stream.steps,
+                      // 仅当计划非空才写：避免用空数组盖掉已有值
+                      ...(stream.plan.length > 0 ? { plan: stream.plan } : {}),
+                    },
                   }
                 : message,
             )

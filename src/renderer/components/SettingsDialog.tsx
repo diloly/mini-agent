@@ -481,16 +481,19 @@ export default function SettingsDialog() {
                       <div>
                         <Label className={SECTION_LABEL_CLASS}>本地数据</Label>
                         <div className="flex items-center gap-2">
+                          {/* 危险操作：用实心 danger。刻意不用 danger-soft ——
+                              它取 --danger-soft，而本主题把它定成 #fef2f2（浅色），
+                              在白底弹层上几乎看不见，会重演「不像按钮」的问题。 */}
                           <Button
-                            variant="ghost"
+                            variant="danger"
                             isDisabled={accountBusy}
                             onPress={() => void handleClearData()}
                           >
-                            {confirmingClear ? '确认清除？' : '清除本账号会话数据'}
+                            {confirmingClear ? '确认清除' : '清除本账号会话数据'}
                           </Button>
                           {confirmingClear ? (
                             <Button
-                              variant="ghost"
+                              variant="secondary"
                               isDisabled={accountBusy}
                               onPress={() => setConfirmingClear(false)}
                             >
@@ -504,8 +507,9 @@ export default function SettingsDialog() {
                       </div>
 
                       <div>
+                        {/* 与侧边栏账号菜单里的「退出登录」保持同一色义（那里是 text-danger） */}
                         <Button
-                          variant="ghost"
+                          variant="danger"
                           isDisabled={accountBusy}
                           onPress={() => void handleSignOut()}
                         >
@@ -519,9 +523,12 @@ export default function SettingsDialog() {
             </Modal.Body>
 
             <Modal.Footer>
+              {/* 模型页页脚只留「保存」：关闭弹层的入口已经有右上角 ×、点遮罩、Esc 三个，
+                  原来的「取消」与它们完全等价，是多余的第四个入口。
+                  表单在「由关到开」的瞬间会从 config 重新回填（见上面的 prevOpenRef 逻辑），
+                  所以直接关掉即等于放弃本次修改，不需要一个专门的「取消」。 */}
               {section === 'model' ? (
-                <div className="flex w-full items-center justify-end gap-2">
-                  <Button variant="ghost" onPress={() => setSettingsOpen(false)}>取消</Button>
+                <div className="flex w-full items-center justify-end">
                   <Button variant="primary" isPending={saving} onPress={() => void handleSave()}>
                     保存
                   </Button>

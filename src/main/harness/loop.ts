@@ -2,7 +2,7 @@
  * 手写 agent loop：带 tools 反复调用模型，直到模型不再请求工具或达到轮数上限。
  *
  * 流程：
- *   用户提问 → 带 tools 调模型 → 有 tool_calls？→ 本地串行执行 → 结果回填 → 再调模型（最多 8 轮）
+ *   用户提问 → 带 tools 调模型 → 有 tool_calls？→ 本地串行执行 → 结果回填 → 再调模型（最多 16 轮）
  *                                                  └ 无 tool_calls → 输出文本，结束
  *
  * 关键约定：
@@ -22,8 +22,19 @@ import { createAbortError } from '../providers/sse';
 import { findTool, harnessToolsFor } from './tools';
 import type { ToolContext, ToolResult } from './types';
 
-/** agent loop 的最大轮数：超过则强制收尾，避免模型无限调用工具 */
-const MAX_TURNS = 8;
+/**
+ * agent loop 的最大轮数：超过则强制收尾，避免模型无限调用工具。
+ *
+ * 注意「轮」的口径：一轮 = 一次「模型回话」。模型在一轮里可以同时输出正文与多个
+ * tool_calls，所以轮数远小于工具调用次数。
+ *
+ * 为什么要放宽到 16：系统规则要求「开始某一步之前、完成某一步之后，各调用一次
+ * update_plan」，于是每个计划步骤实际要占约 2 轮。实测 4 步任务约需 9~11 轮，
+ * 旧的 8 轮必然撞顶（用户实机复现过：4 步全完成、6 个工具执行完，却卡在上限收尾）。
+ * 16 轮可覆盖 6~7 步的任务。不再往上调：每轮都是一次真实的模型请求（计费 + 延迟），
+ * 上限过高只会让跑飞的模型多烧 token，并不会让任务更容易成功。
+ */
+const MAX_TURNS = 16;
 
 /** 工具结果回显给模型前的最大长度，超出部分截断 */
 const TOOL_RESULT_PREVIEW_LIMIT = 200;
@@ -61,6 +72,7 @@ async function executeToolCall(
   callbacks: HarnessCallbacks,
   signal: AbortSignal,
   toolContext: ToolContext,
+  contentOffset: number,
 ): Promise<void> {
   // 执行前刷新一次 running 步骤，把模型给出的参数展示出来（覆盖 onToolCallStart 时建的那个空参数步骤）
   callbacks.onStep({
@@ -68,6 +80,7 @@ async function executeToolCall(
     name: call.name,
     args: call.arguments,
     status: 'running',
+    contentOffset,
   });
 
   const start = Date.now();
@@ -106,6 +119,7 @@ async function executeToolCall(
     status: result.ok ? 'done' : 'error',
     result: resultPreview,
     elapsedMs,
+    contentOffset,
   };
   steps.push(step);
   // 推送最终态步骤（与在先的 running 步骤同 id，渲染层按 id 覆盖）
@@ -156,12 +170,15 @@ export async function runAgentLoop(params: {
           callbacks.onDelta(delta);
         },
         onToolCallStart: (call: ToolCallStartInfo) => {
-          // 模型刚宣布要调工具：立刻推一个 running 步骤，让 UI 显示「正在调用」
+          // 模型刚宣布要调工具：立刻推一个 running 步骤，让 UI 显示「正在调用」。
+          // 带上此刻的正文长度，交错的渲染层才能把它插到正确位置
+          //（随后 executeToolCall 会用同一 id 覆盖一次，值一致）。
           callbacks.onStep({
             id: call.id,
             name: call.name,
             args: '',
             status: 'running',
+            contentOffset: text.length,
           });
         },
       },
@@ -180,9 +197,11 @@ export async function runAgentLoop(params: {
       toolCalls,
     });
 
-    // 依次串行执行每个工具，结果回填——顺序执行更利于 UI 逐步展示
+    // 依次串行执行每个工具，结果回填——顺序执行更利于 UI 逐步展示。
+    // text.length 即「此刻正文已累积的长度」，作为这批工具的正文分界点：
+    // 同轮多个工具共用同一个值，渲染层据此把它们归为一组插在同一段正文之后。
     for (const call of toolCalls) {
-      await executeToolCall(call, convo, steps, callbacks, signal, toolContext);
+      await executeToolCall(call, convo, steps, callbacks, signal, toolContext, text.length);
     }
   }
 

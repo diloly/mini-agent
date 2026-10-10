@@ -18,6 +18,8 @@ import * as path from 'node:path';
 import type { ToolDefinition } from '../providers/types';
 import { appendDailyNoteToFile, dailyNoteFilePath, formatLocalTime } from '../workspace-memory';
 import type { HarnessTool, ToolContext, ToolResult } from './types';
+import type { PlanStep, PlanStepStatus } from '../../shared/types';
+import { createSearchTools } from './tools-search';
 
 /** 中文星期，用于时间展示 */
 const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -151,6 +153,12 @@ const WRITE_CONTENT_LIMIT = 200_000;
 /** 单条每日笔记的长度上限（字符） */
 const DAILY_NOTE_LIMIT = 2000;
 
+/** 单次计划清单的最大步数 */
+const UPDATE_PLAN_MAX_STEPS = 12;
+
+/** 单条计划标题的最大长度（字符） */
+const UPDATE_PLAN_MAX_TITLE_CHARS = 60;
+
 /** 当前本地时间，形如 `2026-09-18 17:53:21 (周五)` */
 const getCurrentTime: HarnessTool = {
   define(): ToolDefinition {
@@ -242,7 +250,8 @@ const readTextFile: HarnessTool = {
       description:
         `读取文本文件（只读）。当前工作区根目录为 ${root}；` +
         `path 填相对该目录的路径（如 test.txt）。` +
-        `工作区之外的本机路径一律拒绝，本工具无法读取工作区外的任何文件。`,
+        `工作区之外的本机路径一律拒绝，本工具无法读取工作区外的任何文件。` +
+        `不知道文件路径时，先用 list_dir 查看目录、或用 search_text 按内容定位，再填入 path；不要凭猜测填写 path。`,
       parameters: {
         type: 'object',
         properties: {
@@ -544,6 +553,101 @@ const appendDailyNote: HarnessTool = {
   },
 };
 
+/**
+ * 计划清单工具：模型用它维护「本轮打算做什么」的清单，给用户一个可视的进度。
+ * 每次调用都是整份覆盖（非增量）——模型把当前完整清单整体传回，工具原样交给
+ * emitPlan 推给渲染层并存进 meta.plan。这一步不落盘、不读盘，纯展示用途。
+ */
+const updatePlan: HarnessTool = {
+  define(): ToolDefinition {
+    return {
+      name: 'update_plan',
+      description:
+        '维护本轮的计划清单（整份覆盖，非增量）：把当前**完整**的计划清单整体传回，' +
+        '系统会原样替换上一版。每步含 title（要做什么）与 status' +
+        '（pending 待开始 / in_progress 进行中 / done 已完成）。' +
+        '计划有变动时（新增步骤、开始或完成某步）就调用一次；同一时刻最多只有一个 in_progress。' +
+        '仅用于需要 3 步以上的多步任务，简单问题不要建计划；没有计划时不必调用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          steps: {
+            type: 'array',
+            description: `完整的计划清单（整份覆盖，非增量），最多 ${UPDATE_PLAN_MAX_STEPS} 步`,
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: '这一步要做什么，简洁的纯文本' },
+                status: {
+                  type: 'string',
+                  enum: ['pending', 'in_progress', 'done'],
+                  description: '这一步的状态：pending 待开始 / in_progress 进行中 / done 已完成',
+                },
+              },
+              required: ['title', 'status'],
+            },
+          },
+        },
+        required: ['steps'],
+      },
+    };
+  },
+  async execute(rawArgs: string, signal: AbortSignal, context: ToolContext): Promise<ToolResult> {
+    if (signal.aborted) {
+      return { ok: false, text: '已停止：更新计划被用户中止' };
+    }
+    if (!context.emitPlan) {
+      // 没有推送通道（历史回放等非流式场景）：工具不可用，但不要让整轮走到 chat:error
+      return { ok: false, text: '当前场景不支持维护计划清单' };
+    }
+    const { steps } = parseArgs<{ steps?: unknown }>(rawArgs);
+    if (!Array.isArray(steps)) {
+      return { ok: false, text: '参数错误：缺少 steps 数组' };
+    }
+    if (steps.length > UPDATE_PLAN_MAX_STEPS) {
+      return {
+        ok: false,
+        text: `计划步数过多（上限 ${UPDATE_PLAN_MAX_STEPS} 步，当前 ${steps.length} 步）`,
+      };
+    }
+    const okSteps: PlanStep[] = [];
+    for (let index = 0; index < steps.length; index += 1) {
+      const raw = steps[index];
+      if (typeof raw !== 'object' || raw === null) {
+        return { ok: false, text: `参数错误：steps[${index}] 不是对象` };
+      }
+      const entry = raw as Record<string, unknown>;
+      const title = typeof entry.title === 'string' ? entry.title.trim() : '';
+      const status = entry.status;
+      if (title.length === 0) {
+        return { ok: false, text: `参数错误：steps[${index}].title 为空或非法` };
+      }
+      if (title.length > UPDATE_PLAN_MAX_TITLE_CHARS) {
+        return {
+          ok: false,
+          text: `计划标题过长（上限 ${UPDATE_PLAN_MAX_TITLE_CHARS} 字符，当前 ${title.length} 字符）`,
+        };
+      }
+      if (status !== 'pending' && status !== 'in_progress' && status !== 'done') {
+        return {
+          ok: false,
+          text: `参数错误：steps[${index}].status 非法（应为 pending / in_progress / done）`,
+        };
+      }
+      okSteps.push({ title, status: status as PlanStepStatus });
+    }
+    context.emitPlan(okSteps);
+    return { ok: true, text: `已更新计划清单（${okSteps.length} 步）` };
+  },
+};
+
+/** 搜索类工具由工厂注入工作区守卫后构造，避免 tools-search ↔ tools 形成 import 环 */
+const searchTools = createSearchTools({
+  resolveInsideWorkspace,
+  resolveWorkspaceRealRoot,
+  verifyRealPath,
+});
+
 /** 内置工具列表；loop 会取它们的 define(context) 暴露给模型 */
 export const HARNESS_TOOLS: HarnessTool[] = [
   getCurrentTime,
@@ -552,6 +656,8 @@ export const HARNESS_TOOLS: HarnessTool[] = [
   writeTextFile,
   editTextFile,
   appendDailyNote,
+  updatePlan,
+  ...searchTools,
 ];
 
 /**

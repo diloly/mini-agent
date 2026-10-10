@@ -8,6 +8,7 @@
  *   而不会让整轮生成走到 chat:error。
  */
 import type { ToolDefinition } from '../providers/types';
+import type { PlanStep } from '../../shared/types';
 
 /** 工具执行结果：ok 标识是否「业务成功」，text 是回灌给模型的文案 */
 export interface ToolResult {
@@ -33,6 +34,12 @@ export interface ToolContext {
    * `.agent/memory/` 目录，留着只会白占一份 tool schema 的 token。
    */
   memoryEnabled: boolean;
+  /**
+   * 推送本轮计划清单快照（由 update_plan 工具调用）。
+   * 主进程会据此 emit CHAT_PLAN 事件给渲染层，并记入 assistant 消息的 meta.plan。
+   * 可选：历史会话回放等不流式推送的场景可能不提供，此时工具直接返回失败文案。
+   */
+  emitPlan?: (plan: PlanStep[]) => void;
 }
 
 /** 一个可被模型调用的工具：声明 + 执行函数 */

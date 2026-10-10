@@ -15,6 +15,7 @@ import {
   type ChatChunkEvent,
   type ChatEndEvent,
   type ChatErrorEvent,
+  type ChatPlanEvent,
   type ChatSendRequest,
   type ChatSendResponse,
   type ChatStepEvent,
@@ -83,6 +84,8 @@ const api = {
     subscribe<ChatErrorEvent>(CHANNELS.CHAT_ERROR, listener),
   onChatStep: (listener: EventListener<ChatStepEvent>): (() => void) =>
     subscribe<ChatStepEvent>(CHANNELS.CHAT_STEP, listener),
+  onChatPlan: (listener: EventListener<ChatPlanEvent>): (() => void) =>
+    subscribe<ChatPlanEvent>(CHANNELS.CHAT_PLAN, listener),
 
   // ---- 配置与模型 ----
   getConfig: (): Promise<PublicConfig> => ipcRenderer.invoke(CHANNELS.CONFIG_GET),
