@@ -90,6 +90,16 @@ export function deleteConversation(id: string): Promise<OkResult> {
   return ensureApi().deleteConversation(id);
 }
 
+/** 重命名会话 */
+export function renameConversation(id: string, title: string): Promise<OkResult> {
+  return ensureApi().renameConversation(id, title);
+}
+
+/** 置顶 / 取消置顶会话 */
+export function setConversationPinned(id: string, pinned: boolean): Promise<OkResult> {
+  return ensureApi().setConversationPinned(id, pinned);
+}
+
 /** 发起一轮流式对话 */
 export function sendChat(request: ChatSendRequest): Promise<ChatSendResponse> {
   return ensureApi().sendChat(request);

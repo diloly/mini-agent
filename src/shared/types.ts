@@ -153,6 +153,11 @@ export interface Conversation {
    * 缺省时回退到默认工作区；读写文件的工具只允许在该目录内操作。
    */
   workspaceRoot?: string;
+  /**
+   * 是否置顶。置顶会话排在列表最前。
+   * 缺省 / 非 true 一律视为未置顶（不写 false，避免旧数据与新数据两种形态并存）。
+   */
+  pinned?: boolean;
 }
 
 /** DeepSeek 配置：apiKeyEnc 为 safeStorage 加密后的 base64 密文，永不出主进程 */
@@ -241,6 +246,19 @@ export const DEFAULT_MODEL: Record<ProviderId, string> = {
 
 /** 会话标题回退值 */
 export const DEFAULT_CONVERSATION_TITLE = '新会话';
+
+/**
+ * 会话列表排序：置顶优先，组内按 updatedAt 倒序。
+ * 主进程的 list 接口与渲染层的乐观更新都用这一份，保证两侧顺序一致。
+ */
+export function sortConversationsByPinned<T extends { pinned?: boolean; updatedAt: number }>(
+  list: readonly T[],
+): T[] {
+  return [...list].sort((a, b) => {
+    const pinnedDiff = Number(b.pinned === true) - Number(a.pinned === true);
+    return pinnedDiff !== 0 ? pinnedDiff : b.updatedAt - a.updatedAt;
+  });
+}
 
 /** 单次请求携带的历史消息条数上限 */
 export const CONTEXT_MESSAGE_LIMIT = 20;

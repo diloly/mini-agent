@@ -92,7 +92,7 @@
 1. `package.json`：按 §1 依赖清单写 dependencies / devDependencies；scripts 至少 `dev`（electron-vite dev）、`build`（electron-vite build + electron-builder，脚本存在即可）。
 2. `postcss.config.js`：`export default { plugins: { "@tailwindcss/postcss": {} } }`，**不要** autoprefixer。
 3. `electron.vite.config.ts`：main / preload / renderer 三段；renderer 段开启 react 插件（Vite 会自动读 `postcss.config.js`）。
-4. `index.html`：`<html lang="zh-CN" class="light" data-theme="light" data-reduce-motion="true">`，body 挂 `#root`，引入 `main.tsx`。
+4. `index.html`：`<html lang="zh-CN" class="light" data-theme="light">`，body 挂 `#root`，引入 `main.tsx`。
 5. `index.css`：只写 `@import` 顺序 + `@import "highlight.js/styles/github.min.css"` + 一句 body 基础排版（背景/文字走变量）。**主题变量不写在这里**（留给 T5）。
 6. `main.tsx`：React 19 `createRoot`；**全工程唯一** `import './index.css'` 的位置；先渲染一个占位 `<div/>`。
 7. `electron-builder.yml`：win x64 / nsis / 产物目录 / `asar: true`；**不要**配置 CI。
@@ -101,7 +101,7 @@
 - [ ] `package.json` 含 `tailwindcss@^4`、`@tailwindcss/postcss`、`@heroui/react`、`@heroui/styles`、`react@^19`；**不含** framer-motion / MUI / 图标库
 - [ ] 仓库根目录**不存在** `tailwind.config.js`
 - [ ] `postcss.config.js` 只有一个插件
-- [ ] `index.html` 的 `<html>` 同时带 `class="light"`、`data-theme="light"`、`data-reduce-motion="true"`、`lang="zh-CN"`
+- [ ] `index.html` 的 `<html>` 同时带 `class="light"`、`data-theme="light"`、`lang="zh-CN"`
 - [ ] `index.css` 中 `@import "tailwindcss"` 出现在 `@import "@heroui/styles"` 之前
 - [ ] `electron.vite.config.ts` 含 main/preload/renderer 三段配置
 - [ ] 全工程只有 `main.tsx` 一处 `import './index.css'`
@@ -328,8 +328,8 @@ graph LR
 ### 4.7 HeroUI Provider / 主题挂载约定
 
 1. **v3 不需要 Provider** —— 官方明确说明，本项目**不写** `HeroUIProvider` 包裹，`main.tsx` 只 `createRoot(<App/>)`。
-2. 若工程师安装到的版本确实导出并要求 `HeroUIProvider`，则**唯一挂载点**是 `src/renderer/main.tsx` 的 `<App />` 外层，**不得**在子组件里二次包裹（会导致 `data-theme` 与 reduce-motion 失效）。
-3. 主题锁定不靠 JS，靠 `index.html` 的 `<html class="light" data-theme="light" data-reduce-motion="true">`；**任何组件不得**动态增删 `dark` 类或调用主题切换 API。
+2. 若工程师安装到的版本确实导出并要求 `HeroUIProvider`，则**唯一挂载点**是 `src/renderer/main.tsx` 的 `<App />` 外层，**不得**在子组件里二次包裹（会导致 `data-theme` 失效）。
+3. 主题锁定不靠 JS，靠 `index.html` 的 `<html class="light" data-theme="light">`；**任何组件不得**动态增删 `dark` 类或调用主题切换 API。
 4. 样式 import 只允许出现在 `src/renderer/index.css` 一个文件里；`main.tsx` 只 import 一次 `./index.css`。
 
 ### 4.8 其它

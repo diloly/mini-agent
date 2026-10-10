@@ -21,6 +21,8 @@ export const CHANNELS = {
   CONVERSATION_CREATE: 'conversation:create',
   CONVERSATION_GET: 'conversation:get',
   CONVERSATION_DELETE: 'conversation:delete',
+  CONVERSATION_RENAME: 'conversation:rename',
+  CONVERSATION_SET_PINNED: 'conversation:setPinned',
   CHAT_SEND: 'chat:send',
   CHAT_ABORT: 'chat:abort',
   CHAT_CHUNK: 'chat:chunk',
@@ -69,6 +71,8 @@ export interface ConversationSummary {
   providerId: ProviderId;
   model: string;
   messageCount: number;
+  /** 是否置顶（列表项形态统一，故为必填；未置顶为 false） */
+  pinned: boolean;
 }
 
 /** 通用成功应答 */
@@ -84,6 +88,18 @@ export interface GetConversationRequest {
 /** 删除会话 */
 export interface DeleteConversationRequest {
   id: string;
+}
+
+/** 重命名会话 */
+export interface RenameConversationRequest {
+  id: string;
+  title: string;
+}
+
+/** 置顶 / 取消置顶会话 */
+export interface SetConversationPinnedRequest {
+  id: string;
+  pinned: boolean;
 }
 
 /** 发起一轮流式对话：requestId 由渲染层生成，用于多路复用与停止生成 */

@@ -36,6 +36,8 @@ import {
   type OpenExternalRequest,
   type OpenExternalResult,
   type PickWorkspaceResult,
+  type RenameConversationRequest,
+  type SetConversationPinnedRequest,
   type SetConversationWorkspaceRequest,
 } from '../shared/ipc-channels';
 import {
@@ -44,6 +46,7 @@ import {
   DEFAULT_THEME_MODE,
   ERROR_TEXT,
   isThemeMode,
+  sortConversationsByPinned,
   TITLE_MAX_LENGTH,
   type AppConfig,
   type Conversation,
@@ -187,6 +190,7 @@ function toSummary(conversation: Conversation): ConversationSummary {
     providerId: conversation.providerId,
     model: conversation.model,
     messageCount: conversation.messages.length,
+    pinned: conversation.pinned === true,
   };
 }
 
@@ -243,7 +247,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
 
   async function handleConversationList(_event: IpcMainInvokeEvent): Promise<ConversationSummary[]> {
     const list = await readConversations();
-    return list.map(toSummary).sort((a, b) => b.updatedAt - a.updatedAt);
+    return sortConversationsByPinned(list.map(toSummary));
   }
 
   async function handleConversationCreate(_event: IpcMainInvokeEvent): Promise<Conversation> {
@@ -307,6 +311,55 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     await mutateAccountMeta((meta) => {
       if (meta.lastConversationId === id) {
         meta.lastConversationId = undefined;
+      }
+    });
+    return { ok: true };
+  }
+
+  /**
+   * 重命名会话。标题去首尾空白并把连续空白压成单空格；空标题视为非法，直接不改动
+   * （渲染层已禁用空标题的确认按钮，这里只做兜底，避免脏数据落盘）。
+   * 刻意**不更新 updatedAt**：改名不该把会话在时间序里顶到最前。
+   */
+  async function handleConversationRename(
+    _event: IpcMainInvokeEvent,
+    request: RenameConversationRequest,
+  ): Promise<OkResult> {
+    const id = typeof request?.id === 'string' ? request.id : '';
+    const title = typeof request?.title === 'string' ? request.title.trim().replace(/\s+/g, ' ') : '';
+    if (title.length === 0) {
+      return { ok: true };
+    }
+    const nextTitle = title.length > TITLE_MAX_LENGTH ? title.slice(0, TITLE_MAX_LENGTH) : title;
+    await mutateConversations((list) => {
+      const conversation = list.find((item) => item.id === id);
+      if (conversation) {
+        conversation.title = nextTitle;
+      }
+    });
+    return { ok: true };
+  }
+
+  /**
+   * 置顶 / 取消置顶。同样**不动 updatedAt**：置顶只改分组，不改时间序。
+   */
+  async function handleConversationSetPinned(
+    _event: IpcMainInvokeEvent,
+    request: SetConversationPinnedRequest,
+  ): Promise<OkResult> {
+    const id = typeof request?.id === 'string' ? request.id : '';
+    const pinned = request?.pinned === true;
+    await mutateConversations((list) => {
+      const conversation = list.find((item) => item.id === id);
+      if (!conversation) {
+        return;
+      }
+      // 置顶写 true，取消置顶删字段（而非写 false）：与 Conversation.pinned 的约定一致，
+      // 「从未置顶」与「取消置顶」在盘上是同一形态，避免两种写法并存。
+      if (pinned) {
+        conversation.pinned = true;
+      } else {
+        delete conversation.pinned;
       }
     });
     return { ok: true };
@@ -825,6 +878,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.CONVERSATION_CREATE, handleConversationCreate);
     registerHandler(CHANNELS.CONVERSATION_GET, handleConversationGet);
     registerHandler(CHANNELS.CONVERSATION_DELETE, handleConversationDelete);
+    registerHandler(CHANNELS.CONVERSATION_RENAME, handleConversationRename);
+    registerHandler(CHANNELS.CONVERSATION_SET_PINNED, handleConversationSetPinned);
     registerHandler(CHANNELS.CHAT_SEND, handleChatSend);
     registerHandler(CHANNELS.CHAT_ABORT, handleChatAbort);
     registerHandler(CHANNELS.CONFIG_GET, handleConfigGet);

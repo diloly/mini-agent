@@ -32,7 +32,9 @@ import {
   type OpenExternalRequest,
   type OpenExternalResult,
   type PickWorkspaceResult,
+  type RenameConversationRequest,
   type ResetPasswordRequest,
+  type SetConversationPinnedRequest,
   type SetConversationWorkspaceRequest,
   type SignInRequest,
   type SignUpRequest,
@@ -70,6 +72,10 @@ const api = {
     ipcRenderer.invoke(CHANNELS.CONVERSATION_GET, { id } satisfies GetConversationRequest),
   deleteConversation: (id: string): Promise<OkResult> =>
     ipcRenderer.invoke(CHANNELS.CONVERSATION_DELETE, { id } satisfies DeleteConversationRequest),
+  renameConversation: (id: string, title: string): Promise<OkResult> =>
+    ipcRenderer.invoke(CHANNELS.CONVERSATION_RENAME, { id, title } satisfies RenameConversationRequest),
+  setConversationPinned: (id: string, pinned: boolean): Promise<OkResult> =>
+    ipcRenderer.invoke(CHANNELS.CONVERSATION_SET_PINNED, { id, pinned } satisfies SetConversationPinnedRequest),
 
   // ---- 对话（流式） ----
   sendChat: (request: ChatSendRequest): Promise<ChatSendResponse> =>

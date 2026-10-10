@@ -20,7 +20,7 @@
 | D8 | DeepSeek = OpenAI 兼容协议，默认 `deepseek-chat`，Base URL `https://api.deepseek.com` |
 | D9 | 上下文：默认携带最近 20 条消息，不做 token 精算 |
 | D10 | 会话标题 = 首条用户消息截断约 20 字，回退「新会话」，**不调大模型** |
-| D11 | 只做浅色单主题（在 HTML 根节点硬锁定 light + reduce-motion） |
+| D11 | 只做浅色单主题（在 HTML 根节点硬锁定 light） |
 | D12 | **HeroUI 默认视觉必须被主题层收束**（见 §8），组件不得直接使用 HeroUI 默认配色/圆角/阴影/动画 |
 
 > 🚫 **项目级硬性禁令**：任何阶段不得执行 lint / 单测 / 编译校验 / 冒烟测试命令，不得 `npm run build`，不得启动浏览器截图或做 DOM 检查。本文所有「完成判据」均为**静态可核对**或**用户手动运行肉眼确认**。全文不设计 CI 流水线。
@@ -105,7 +105,7 @@ HeroUI v3 从底层就是为 Tailwind v4 的 `@theme` / CSS-first 模型构建�
 | framer-motion | https://heroui.com/cn/docs/react/migration/full-migration | v3 移除 framer-motion，改为原生 CSS 动画 → **不安装** |
 | 主题变量与覆盖 | https://heroui.com/en/docs/handbook/theming 、https://heroui.com/en/docs/handbook/colors | 语义变量 `--accent` / `--background` / `--surface` / `--field-*` / `--separator` / `--border` / `--danger` / `--muted`，在 `:root` 覆盖；新增色需 `@theme inline` 桥接到 Tailwind |
 | 主题切换 | 同上 | `<html class="light" data-theme="light">` / `class="dark" data-theme="dark"` |
-| 动画抑制 | https://heroui.com/en/docs/handbook/animation | `<html data-reduce-motion="true">` 可**全局关闭** HeroUI 动画 |
+| 动画 | https://heroui.com/en/docs/handbook/animation | **不再**全局关闭 HeroUI 动画（`data-reduce-motion` 已移除）；自研 keyframes 只补必要处 |
 | 组件 API | https://heroui.com/en/docs/handbook/composition | 复合组件点号结构（`Alert.Icon`、`Card.Header`），`.Root` 可省略；事件用 `onPress` 而非 `onClick` |
 
 > ⚠️ 安装时的版本标签：官方 Quick Start 写的是 `@heroui/styles @heroui/react`（无 tag）。若安装时发现 v3 尚未在该源转正，使用 `@heroui/styles@beta @heroui/react@beta`。**不要**安装 `@heroui/system`、`@heroui/theme`、`framer-motion`（三者均为 v2 遗留）。
@@ -120,8 +120,8 @@ HeroUI 出厂默认：大圆角、多层阴影、带缓动的入场动画、饱�
 
 1. **语义变量覆盖**（`:root`）：把所有语义色锁成 PRD 色板 → 组件自动继承，组件代码里不出现任何色值
 2. **Tailwind 桥接**（`@theme inline`）：把变量暴露为 `bg-surface` / `text-muted` 等工具类，业务 div 一律用工具类
-3. **BEM 全局覆盖**（`@layer components`）：压圆角、去阴影、去渐变、缩短动效时长
-4. **根节点属性锁定**（`index.html`）：`class="light" data-theme="light" data-reduce-motion="true"` —— 单主题 + 关闭 UI 库动画
+3. **BEM 全局覆盖**（`@layer components`）：压圆角、去阴影、去渐变
+4. **根节点属性锁定**（`index.html`）：`class="light" data-theme="light"` —— 单主题
 
 这四个杠杆的顺序不能变（`<html>` 属性 → 变量 → 桥接 → BEM 覆盖），否则会被 HeroUI 的层叠优先级反噬。
 
@@ -134,7 +134,7 @@ HeroUI 出厂默认：大圆角、多层阴影、带缓动的入场动画、饱�
 | HTTP 客户端 | 主进程内置 `fetch`（Node 18+ / Electron 28+） | 原生支持 `ReadableStream` + `AbortSignal`，正是 SSE 流式的两个刚需 |
 | SSE 解析 | 自研 ~60 行 `sse.ts` | DeepSeek 是 SSE、Ollama 是 NDJSON，自研才能一套工具类覆盖两种 |
 | 图标 | 纯文本 / 1px 线性 SVG stroke | **不引图标库**（PRD：无图标背景块） |
-| 动画 | HeroUI 全局关闭 + 自研 2 个 CSS keyframes | 只有「生成中…」跳动与流式光标需要动，其余零动效 |
+| 动画 | HeroUI 出厂动画保留（不再全局关闭）+ 自研 CSS keyframes | 自研动效只加在必要处（当前仅会话标题 hover 滚动），其余保持静止 |
 | 打包 | `electron-builder` + `electron-builder.yml` | Windows x64，`nsis` 目标 |
 
 ---
@@ -149,11 +149,11 @@ flowchart TB
 
     subgraph RENDERER["🖥 渲染进程 Renderer（Chromium，无 Node）"]
         direction TB
-        R0["index.html 根节点锁定<br/>class=light · data-theme=light · data-reduce-motion=true"]
+        R0["index.html 根节点锁定<br/>class=light · data-theme=light"]
         R1["React 视图层（HeroUI v3 组件 + 自研布局）<br/>Sidebar / TopBar / MessageList / MessageBubble / Composer / SettingsDialog"]
         R2["zustand Store<br/>会话列表 · 消息 · 流式缓冲 · loading/error"]
         R3["lib/api.ts<br/>window.api 的 TS 封装（唯一出口）"]
-        R4["styles/theme.css<br/>主题收束层：色板 / 圆角 / 阴影 / 动效"]
+        R4["styles/theme.css<br/>主题收束层：色板 / 圆角 / 阴影 / 滚动条"]
         R0 --> R1
         R1 <--> R2
         R2 <--> R3
@@ -248,12 +248,12 @@ mini-agent/
    ├─ preload/                         # 【预加载：唯一桥梁，只做白名单转发】
    │  └─ index.ts                      # contextBridge 暴露 window.api（方法 + 事件订阅）
    └─ renderer/                        # 【渲染进程：纯视图 + 状态，零网络零文件系统】
-      ├─ index.html                    # 挂载点；<html> 上锁定 light 主题 + reduce-motion + lang
+      ├─ index.html                    # 挂载点；<html> 上锁定 light 主题 + lang
       ├─ main.tsx                      # React 入口；**唯一** import './index.css' 的位置
       ├─ App.tsx                       # 三区布局骨架 + 初始化拉取（会话列表 + 配置）
       ├─ index.css                     # 样式总入口：@import 顺序 + highlight.js 主题 + 基础排版
       ├─ styles/
-      │  └─ theme.css                  # ★主题收束唯一落点：色板变量 + @theme 桥接 + BEM 覆盖 + 动效压制
+      │  └─ theme.css                  # ★主题收束唯一落点：色板变量 + @theme 桥接 + BEM 覆盖 + 滚动条
       ├─ lib/
       │  └─ api.ts                     # window.api 的类型化封装 + requestId 生成 + 事件订阅 helper
       ├─ store/
@@ -644,7 +644,7 @@ sequenceDiagram
     M->>M: webPreferences{nodeIntegration:false, contextIsolation:true, sandbox:true, preload}
     M->>I: registerIpcHandlers(mainWindow)
     M->>R: loadFile / loadURL(renderer index.html)
-    R->>R: html 根节点已锁定 class=light, data-theme=light, data-reduce-motion=true
+    R->>R: html 根节点已锁定 class=light, data-theme=light
     R->>R: index.css：@import tailwindcss → @import @heroui/styles → @import ./styles/theme.css
     R->>S: 初始化空 store（空态渲染，不白屏）
     R->>P: api.getConfig() + api.listConversations()
@@ -830,7 +830,6 @@ src/renderer/index.html      ← ① 根节点属性锁定（单主题 + 关闭 
 | 阴影最多 1 层且仅弹层 | `theme.css` ③ 段 | 全仓 `shadow-` 仅出现在 `.modal__content/.popover/.select__content` |
 | 圆角 6px / 8px | `--radius-sm/md` + BEM 覆盖 | 无 `rounded-full`、`rounded-2xl`、`rounded-xl` |
 | 强调色一屏 ≤2 处 | 仅发送按钮、输入框聚焦边框、会话选中态、主链接 | `bg-accent` / `text-accent` 在组件中出现次数可数 |
-| 关闭 UI 库动画 | `index.html` 的 `data-reduce-motion="true"` | html 标签属性存在；未引入 framer-motion |
 | 只做浅色单主题 | `index.html` 的 `class="light" data-theme="light"` | 全仓无 `data-theme="dark"` 定义块 |
 | 无插画 / 无图标背景块 | 无图标库依赖；`Alert` 不渲染 `.Icon` | `package.json` 无图标库 |
 | 内容最大宽 720px、正文 14px | `MessageList` 内层 `max-w-[720px] mx-auto text-[14px] leading-6` | 类存在 |
@@ -879,7 +878,7 @@ src/renderer/index.html      ← ① 根节点属性锁定（单主题 + 关闭 
 - [ ] 不存在 `tailwind.config.js`
 - [ ] `postcss.config.js` 仅 `@tailwindcss/postcss`
 - [ ] `index.css` 中 `@import "tailwindcss"` 在 `@import "@heroui/styles"` 之前
-- [ ] `index.html` 的 `<html>` 带 `class="light" data-theme="light" data-reduce-motion="true" lang="zh-CN"`
+- [ ] `index.html` 的 `<html>` 带 `class="light" data-theme="light" lang="zh-CN"`
 - [ ] 全仓十六进制色值仅出现在 `src/renderer/styles/theme.css`
 - [ ] 无 `rounded-full` / `rounded-xl` / `rounded-2xl` / `bg-gradient-to`
 - [ ] 组件中事件使用 `onPress` 而非 `onClick`

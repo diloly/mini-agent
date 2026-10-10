@@ -4,7 +4,7 @@
  * 约定：
  * - 偏好（ThemeMode）持久化在 config.json，实际主题（ResolvedTheme）只作用于 DOM；
  * - class 与 data-theme 两个钩子同时维护：HeroUI 的样式两处都看，theme.css 的选择器也是；
- * - 只碰 class 与 data-theme，绝不动 index.html 上的 data-reduce-motion。
+ * - 只碰 class 与 data-theme，不动其它属性。
  */
 import {
   DEFAULT_THEME_MODE,
@@ -33,7 +33,7 @@ export function resolveTheme(mode: ThemeMode | undefined): ResolvedTheme {
   return effective;
 }
 
-/** 把实际主题写到 html 上（逐键赋值，不会冲掉 data-reduce-motion） */
+/** 把实际主题写到 html 上（逐键赋值，不会冲掉其它属性） */
 export function applyTheme(theme: ResolvedTheme): void {
   const root = document.documentElement;
   const isDark = theme === 'dark';

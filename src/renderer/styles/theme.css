@@ -4,7 +4,7 @@
      ①′ 交互态压制 —— 输入框 hover 等出厂交互态（必须未分层才能压过 @heroui/styles，见该段注释）
      ② @theme inline 桥接 —— 把语义变量接进 Tailwind 的 --color-* 命名空间
      ③ BEM 覆盖 —— 收束 HeroUI 组件与 Markdown 排版
-     ④ 动效压制与滚动条 —— data-reduce-motion=true 时统一关掉过渡
+     ④ 滚动条
    本文件被 src/renderer/index.css 在 @heroui/styles 之后、highlight.js 之前引入。
 */
 
@@ -477,18 +477,7 @@
   }
 }
 
-/* ── ④ 动效压制与滚动条 ─────────────────────────────────────────────
-   index.html 上带 data-reduce-motion="true"：桌面工具不需要装饰性动效。 */
-/* Spinner 必须放行：它是「正在加载」的唯一视觉信号，冻成静止图标会被当成卡死 */
-[data-reduce-motion='true'] *:not([data-slot='spinner']):not([data-slot*='spinner'] *),
-[data-reduce-motion='true'] *::before,
-[data-reduce-motion='true'] *::after {
-  animation-duration: 0.001ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
-  scroll-behavior: auto !important;
-}
-
+/* ── ④ 滚动条 ─────────────────────────────────────────────────────── */
 /* 滚动条：不再用 `*` 选择器（特异性 (0,0,0) 会被 HeroUI 的 .scrollbar 工具类压掉），
    交给 ① 里的 --scrollbar-* token；下面这段是 Chromium/Electron 需要的私有伪元素补充。
 
@@ -511,4 +500,40 @@
 
 ::-webkit-scrollbar-corner {
   background-color: transparent;
+}
+
+/* ── 侧栏会话标题：默认截断，hover 时若标题超宽则横向滚动显示全文 ─────
+   用容器查询单位 100cqw 取到轨道宽度，不需要 JS 测量 scrollWidth。
+   min(0px, ...) 是关键：标题没超宽时位移被夹到 0，否则短标题会反向滑动。 */
+.conv-title-track {
+  container-type: inline-size;
+  overflow: hidden;
+  white-space: nowrap;
+  /* 静止时用「…」告知标题被截断。⚠️ 实测不生效：本元素的唯一行内内容是
+     .conv-title-text 这个 atomic inline-box，父块容器看不到它的字形，不会插省略号。
+     保留是为了将来若换掉 inline-block 方案时不必重新发现这件事。 */
+  text-overflow: ellipsis;
+}
+
+.conv-title-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+@keyframes conv-title-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(min(0px, calc(100cqw - 100%)));
+  }
+}
+
+/* 配合上面那条：hover 滚动的那一刻去掉省略号。同上，当前实测不生效，保留备用。 */
+.group:hover .conv-title-track {
+  text-overflow: clip;
+}
+
+.group:hover .conv-title-text {
+  animation: conv-title-scroll 3.2s ease-in-out 0.3s infinite alternate;
 }

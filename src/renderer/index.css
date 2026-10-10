@@ -2,7 +2,7 @@
    ① tailwindcss 必须最先
    ② @heroui/styles 紧随其后
    ③ 主题收束层 src/renderer/styles/theme.css —— 色板变量 / @theme 桥接 /
-      BEM 覆盖 / 动效压制都在这里，全仓唯一的十六进制色值出处
+      BEM 覆盖 / 滚动条都在这里，全仓唯一的十六进制色值出处
    ④ highlight.js 代码高亮主题
 */
 @import "tailwindcss";
@@ -27,6 +27,4 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-
-  /* 简约红线：全局关闭滚动条以外的装饰性动效由 data-reduce-motion 统一处理 */
 }

@@ -14,6 +14,7 @@ import type {
 } from '../../shared/ipc-channels';
 import {
   AUTH_ERROR_TEXT,
+  sortConversationsByPinned,
   type ErrorCode,
   type FinishReason,
   type Message,
@@ -41,6 +42,8 @@ import {
   signOut as apiSignOut,
   signUp as apiSignUp,
   pickWorkspace as apiPickWorkspace,
+  renameConversation as apiRenameConversation,
+  setConversationPinned as apiSetConversationPinned,
   setConversationWorkspace as apiSetConversationWorkspace,
 } from '../lib/api';
 import { applyTheme, resolveTheme } from '../lib/theme';
@@ -98,6 +101,8 @@ export interface AppState {
   activeRequestId: string | null;
   loading: boolean;
   error: string | null;
+  /** 已跑完但用户还没看过的会话 id 集合（内存态，不持久化；驱动侧栏的未读圆点） */
+  unreadConversations: Record<string, true>;
   config: PublicConfig | null;
   settingsOpen: boolean;
   /** 当前会话绑定的工作区根目录；为 null 时表示使用默认工作区 */
@@ -112,6 +117,10 @@ export interface AppState {
   selectConversation: (id: string | null) => Promise<void>;
   createConversation: () => Promise<void>;
   removeConversation: (id: string) => Promise<void>;
+  /** 重命名会话（先本地乐观更新，IPC 失败回滚） */
+  renameConversation: (id: string, title: string) => Promise<void>;
+  /** 置顶 / 取消置顶（先本地乐观更新并重排，IPC 失败回滚） */
+  setConversationPinned: (id: string, pinned: boolean) => Promise<void>;
   /** 发送消息；传 replaceMessageId 表示「编辑重发」，先丢弃该消息及其之后的全部消息 */
   sendMessage: (content: string, replaceMessageId?: string) => Promise<void>;
   abortActive: () => Promise<void>;
@@ -162,6 +171,34 @@ export interface AppState {
   setError: (error: string | null) => void;
 }
 
+/**
+ * 判断某会话此刻是否「正被用户注视着」。
+ * 两个条件都要满足：它是当前选中的会话，且窗口处于焦点态（切走 / 最小化 ⇒ hasFocus() 为 false）。
+ * 只有「不在此处」的会话跑完时，才需要在侧栏点一个未读圆点。
+ */
+function isConversationFocused(
+  conversationId: string,
+  activeConversationId: string | null,
+): boolean {
+  if (conversationId !== activeConversationId) {
+    return false;
+  }
+  return typeof document !== 'undefined' && document.hasFocus();
+}
+
+/** 从未读集合中移除一个会话；不存在时原样返回，避免无谓重渲染 */
+function clearUnread(
+  unread: Record<string, true>,
+  conversationId: string,
+): Record<string, true> {
+  if (!unread[conversationId]) {
+    return unread;
+  }
+  const next = { ...unread };
+  delete next[conversationId];
+  return next;
+}
+
 /** 把现有流全部标记为已丢弃（切会话 / 卸载时调用） */
 function discardAll(streams: Record<string, StreamState>): Record<string, StreamState> {
   const next: Record<string, StreamState> = {};
@@ -202,6 +239,7 @@ function toSummary(conversation: {
   providerId: ProviderId;
   model: string;
   messages: Message[];
+  pinned?: boolean;
 }): ConversationSummary {
   return {
     id: conversation.id,
@@ -210,6 +248,7 @@ function toSummary(conversation: {
     providerId: conversation.providerId,
     model: conversation.model,
     messageCount: conversation.messages.length,
+    pinned: conversation.pinned === true,
   };
 }
 
@@ -221,6 +260,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   activeRequestId: null,
   loading: false,
   error: null,
+  unreadConversations: {},
   config: null,
   settingsOpen: false,
   activeWorkspaceRoot: null,
@@ -287,6 +327,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       // 结果是输入框被锁死、点「停止」还会停到已经切走的旧流上
       loading: false,
       activeRequestId: null,
+      // 切到该会话即视为「看过最新的」：清掉它的未读圆点
+      unreadConversations: clearUnread(state.unreadConversations, id),
     }));
     try {
       const conversation = await getConversation(id);
@@ -329,7 +371,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const conversation = await apiCreateConversation();
       set((state) => ({
-        conversations: [toSummary(conversation), ...state.conversations.filter((item) => item.id !== conversation.id)],
+        conversations: sortConversationsByPinned([
+          toSummary(conversation),
+          ...state.conversations.filter((item) => item.id !== conversation.id),
+        ]),
       }));
       await get().selectConversation(conversation.id);
     } catch {
@@ -341,7 +386,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   removeConversation: async (id) => {
     try {
       await apiDeleteConversation(id);
-      set((state) => ({ conversations: state.conversations.filter((item) => item.id !== id) }));
+      set((state) => ({
+        conversations: state.conversations.filter((item) => item.id !== id),
+        unreadConversations: clearUnread(state.unreadConversations, id),
+      }));
       if (get().activeConversationId === id) {
         // 主进程侧已负责清空 ui.lastConversationId（见 handleConversationDelete）
         const nextId = get().conversations[0]?.id ?? null;
@@ -349,6 +397,40 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }
     } catch {
       set({ error: '删除会话失败，请重试' });
+    }
+  },
+
+  /** 重命名会话：标题规范化后先本地乐观更新，失败回滚并报错 */
+  renameConversation: async (id, title) => {
+    const next = title.trim().replace(/\s+/g, ' ');
+    if (next.length === 0) {
+      return;
+    }
+    const previous = get().conversations;
+    set((state) => ({
+      conversations: state.conversations.map((item) =>
+        item.id === id ? { ...item, title: next } : item,
+      ),
+    }));
+    try {
+      await apiRenameConversation(id, next);
+    } catch {
+      set({ conversations: previous, error: '重命名失败，请重试' });
+    }
+  },
+
+  /** 置顶 / 取消置顶：先本地乐观更新并重排，失败回滚并报错 */
+  setConversationPinned: async (id, pinned) => {
+    const previous = get().conversations;
+    set((state) => ({
+      conversations: sortConversationsByPinned(
+        state.conversations.map((item) => (item.id === id ? { ...item, pinned } : item)),
+      ),
+    }));
+    try {
+      await apiSetConversationPinned(id, pinned);
+    } catch {
+      set({ conversations: previous, error: '操作失败，请重试' });
     }
   },
 
@@ -551,6 +633,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         loading: state.activeRequestId === requestId ? false : state.loading,
         activeRequestId: state.activeRequestId === requestId ? null : state.activeRequestId,
         error: null,
+        // 跑完时若用户没在看这个会话（切走了，或窗口不在焦点），点一个未读圆点
+        unreadConversations:
+          stream && !isConversationFocused(stream.conversationId, state.activeConversationId)
+            ? { ...state.unreadConversations, [stream.conversationId]: true }
+            : state.unreadConversations,
       };
     });
     if (stream && stream.discarded && stream.conversationId === get().activeConversationId) {
@@ -588,6 +675,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         loading: state.activeRequestId === requestId ? false : state.loading,
         activeRequestId: state.activeRequestId === requestId ? null : state.activeRequestId,
         error: message,
+        // 跑完时若用户没在看这个会话（切走了，或窗口不在焦点），点一个未读圆点
+        unreadConversations:
+          stream && !isConversationFocused(stream.conversationId, state.activeConversationId)
+            ? { ...state.unreadConversations, [stream.conversationId]: true }
+            : state.unreadConversations,
       };
     });
     if (stream && stream.discarded && stream.conversationId === get().activeConversationId) {
@@ -788,6 +880,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         // 关闭设置弹层：否则下次登录会被自动重新打开
         settingsOpen: false,
         error: null,
+        unreadConversations: {},
       }));
       return;
     }
@@ -865,6 +958,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         activeRequestId: null,
         loading: false,
         activeWorkspaceRoot: null,
+        unreadConversations: {},
       }));
       return result.removedCount;
     } catch {

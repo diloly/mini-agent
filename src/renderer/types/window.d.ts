@@ -39,6 +39,10 @@ export interface MiniAgentApi {
   getConversation(id: string): Promise<Conversation | null>;
   /** 删除会话 */
   deleteConversation(id: string): Promise<OkResult>;
+  /** 重命名会话 */
+  renameConversation(id: string, title: string): Promise<OkResult>;
+  /** 置顶 / 取消置顶会话 */
+  setConversationPinned(id: string, pinned: boolean): Promise<OkResult>;
   /** 发起一轮流式对话，立即返回 requestId 与两条消息的 id */
   sendChat(request: ChatSendRequest): Promise<ChatSendResponse>;
   /** 停止生成 */
