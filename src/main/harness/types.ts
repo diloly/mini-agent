@@ -40,6 +40,12 @@ export interface ToolContext {
    * 可选：历史会话回放等不流式推送的场景可能不提供，此时工具直接返回失败文案。
    */
   emitPlan?: (plan: PlanStep[]) => void;
+  /**
+   * 技能根目录（绝对路径）：<userData>/skills。
+   * 与 workspaceRoot 同层下发 —— 「脚本只能跑在技能目录内」这条围栏需要一个可信的根，
+   * 而它既不能从 relative path 推出来，也不能放模块级全局（两个会话并发生成会互相覆盖）。
+   */
+  skillsRoot: string;
 }
 
 /** 一个可被模型调用的工具：声明 + 执行函数 */

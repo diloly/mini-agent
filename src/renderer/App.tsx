@@ -15,6 +15,7 @@ import LoginScreen from './components/LoginScreen';
 import MessageList from './components/MessageList';
 import SettingsDialog from './components/SettingsDialog';
 import Sidebar from './components/Sidebar';
+import SkillsView from './components/SkillsView';
 import TopBar from './components/TopBar';
 import {
   onAuthChanged,
@@ -73,6 +74,7 @@ export default function App() {
  */
 function MainLayout() {
   const settingsOpen = useAppStore((state) => state.settingsOpen);
+  const mainView = useAppStore((state) => state.mainView);
 
   const hydratedRef = useRef(false);
 
@@ -123,22 +125,28 @@ function MainLayout() {
         <Sidebar />
       </aside>
 
-      {/* ② 右侧主区：顶栏 + 消息区 + 输入区 */}
+      {/* ② 右侧主区：会话视图（顶栏 + 消息区 + 输入区）或技能视图，二选一 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* 顶栏：固定 48px；不加下边线，与消息区靠留白区分 */}
-        <header className="h-12 shrink-0 px-4">
-          <TopBar />
-        </header>
+        {mainView === 'skills' ? (
+          <SkillsView />
+        ) : (
+          <>
+            {/* 顶栏：固定 48px；不加下边线，与消息区靠留白区分 */}
+            <header className="h-12 shrink-0 px-4">
+              <TopBar />
+            </header>
 
-        {/* 消息区：占据剩余高度 */}
-        <main className="min-h-0 flex-1 overflow-hidden">
-          <MessageList />
-        </main>
+            {/* 消息区：占据剩余高度 */}
+            <main className="min-h-0 flex-1 overflow-hidden">
+              <MessageList />
+            </main>
 
-        {/* 输入区：不加下边线 */}
-        <footer className="shrink-0 px-4 py-3">
-          <Composer />
-        </footer>
+            {/* 输入区：不加下边线 */}
+            <footer className="shrink-0 px-4 py-3">
+              <Composer />
+            </footer>
+          </>
+        )}
       </div>
 
       {/* ③ 设置弹层：常驻挂载，开合由 store.settingsOpen 控制 */}

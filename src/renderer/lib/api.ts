@@ -27,6 +27,11 @@ import type {
   SignInRequest,
   SignUpRequest,
   SignUpResult,
+  SkillDeleteRequest,
+  SkillDeleteResult,
+  SkillImportResult,
+  SkillOpenDirResult,
+  SkillSummary,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 import type { MiniAgentApi } from '../types/window';
@@ -203,4 +208,24 @@ export function clearLocalData(request: ClearLocalDataRequest): Promise<ClearLoc
 /** 订阅登录态变化；返回取消订阅函数 */
 export function onAuthChanged(listener: (state: AuthState) => void): () => void {
   return ensureApi().onAuthChanged(listener);
+}
+
+/** 列出已安装技能 */
+export function listSkills(): Promise<SkillSummary[]> {
+  return ensureApi().listSkills();
+}
+
+/** 在系统文件管理器中打开技能根目录；失败时 ok=false + reason */
+export function openSkillsDir(): Promise<SkillOpenDirResult> {
+  return ensureApi().openSkillsDir();
+}
+
+/** 从文件夹导入技能（主进程弹目录选择框；canceled=true 表示用户取消） */
+export function importSkills(): Promise<SkillImportResult> {
+  return ensureApi().importSkills();
+}
+
+/** 删除一个技能目录（confirm 为真才执行） */
+export function deleteSkill(request: SkillDeleteRequest): Promise<SkillDeleteResult> {
+  return ensureApi().deleteSkill(request);
 }

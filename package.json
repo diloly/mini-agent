@@ -13,7 +13,9 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "dist:win": "electron-vite build && electron-builder --win --x64"
+    "fetch-runtime": "node scripts/fetch-runtime.mjs",
+    "dist:win": "node scripts/fetch-runtime.mjs && electron-vite build && electron-builder --win --x64",
+    "postinstall": "node scripts/fetch-runtime.mjs --optional"
   },
   "dependencies": {
     "@heroui/react": "^3.0.0",

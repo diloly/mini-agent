@@ -56,6 +56,14 @@ export const CHANNELS = {
   AUTH_DELETE_ACCOUNT: 'auth:deleteAccount',
   /** 清除本账号本地数据（会话），confirm 为真才执行 */
   AUTH_CLEAR_LOCAL_DATA: 'auth:clearLocalData',
+  /** 列出已安装技能（设置 → 技能面板用） */
+  SKILL_LIST: 'skill:list',
+  /** 在系统文件管理器中打开技能根目录（供用户手动放置技能包） */
+  SKILL_OPEN_DIR: 'skill:openDir',
+  /** 从文件夹导入技能（主进程内部弹目录选择对话框） */
+  SKILL_IMPORT: 'skill:import',
+  /** 删除一个技能目录（confirm 为真才执行） */
+  SKILL_DELETE: 'skill:delete',
   /** 事件：主进程 → 渲染层，登录态变化（token 刷新 / 被登出） */
   AUTH_CHANGED: 'auth:changed',
 } as const;
@@ -280,3 +288,13 @@ export interface ClearLocalDataResult {
   ok: boolean;
   removedCount: number;
 }
+
+/** 技能相关契约统一从本文件转出（定义在 shared/skills.ts，避免三方各自 import 两个文件） */
+export type {
+  SkillDeleteRequest,
+  SkillDeleteResult,
+  SkillImportResult,
+  SkillImportSkip,
+  SkillOpenDirResult,
+  SkillSummary,
+} from './skills';

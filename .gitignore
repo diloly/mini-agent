@@ -18,3 +18,6 @@ Thumbs.db
 
 # 环境变量（含 Supabase 项目地址与 publishable key）；入库 .env.example 作占位
 .env
+
+# 抓取脚本产出的解释器 runtime（二进制不入库；由 scripts/fetch-runtime.mjs 生成）
+resources/runtime/

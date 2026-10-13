@@ -39,6 +39,11 @@ import {
   type SignInRequest,
   type SignUpRequest,
   type SignUpResult,
+  type SkillDeleteRequest,
+  type SkillDeleteResult,
+  type SkillImportResult,
+  type SkillOpenDirResult,
+  type SkillSummary,
 } from '../shared/ipc-channels';
 import type { ProviderId, PublicConfig } from '../shared/types';
 
@@ -136,6 +141,17 @@ const api = {
   /** 订阅登录态变化（token 刷新 / 被登出 / 跨窗口）；返回取消订阅函数 */
   onAuthChanged: (listener: EventListener<AuthState>): (() => void) =>
     subscribe<AuthState>(CHANNELS.AUTH_CHANGED, listener),
+
+  // ---- 技能 ----
+  /** 列出已安装技能 */
+  listSkills: (): Promise<SkillSummary[]> => ipcRenderer.invoke(CHANNELS.SKILL_LIST),
+  /** 在系统文件管理器中打开技能根目录 */
+  openSkillsDir: (): Promise<SkillOpenDirResult> => ipcRenderer.invoke(CHANNELS.SKILL_OPEN_DIR),
+  /** 从文件夹导入技能（主进程弹目录选择框） */
+  importSkills: (): Promise<SkillImportResult> => ipcRenderer.invoke(CHANNELS.SKILL_IMPORT),
+  /** 删除一个技能（confirm 为真才执行） */
+  deleteSkill: (request: SkillDeleteRequest): Promise<SkillDeleteResult> =>
+    ipcRenderer.invoke(CHANNELS.SKILL_DELETE, request),
 } as const;
 
 contextBridge.exposeInMainWorld('api', api);

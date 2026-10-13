@@ -1,7 +1,12 @@
 /**
- * 内置工具集合：共 6 个工具 —— 3 个只读（get_current_time / calculator / read_text_file），
- * 2 个写文件（write_text_file / edit_text_file），1 个追加当日笔记（append_daily_note）。
- * 其中 append_daily_note 受记忆功能开关控制，关闭时经 harnessToolsFor 从暴露列表中摘除。
+ * 内置工具集合（当前共 11 个）：
+ * - 3 个只读：get_current_time / calculator / read_text_file；
+ * - 2 个写文件：write_text_file / edit_text_file；
+ * - 1 个追加当日笔记：append_daily_note（受记忆开关控制，关闭时经 harnessToolsFor 摘除）；
+ * - 1 个维护本轮计划：update_plan；
+ * - 2 个找文件：list_dir / search_text（来自 tools-search.ts）；
+ * - 1 个执行技能脚本：run_skill_script（来自 tools-skill-run.ts；唯一的子进程入口）；
+ * - 1 个读取技能说明书：read_skill（来自 tools-skill-read.ts；根是 skillsRoot 而非工作区）。
  *
  * 安全底线：
  * - calculator：白名单正则彻底排除字母/标识符，杜绝任何属性访问（如 `process.env`）；
@@ -20,6 +25,9 @@ import { appendDailyNoteToFile, dailyNoteFilePath, formatLocalTime } from '../wo
 import type { HarnessTool, ToolContext, ToolResult } from './types';
 import type { PlanStep, PlanStepStatus } from '../../shared/types';
 import { createSearchTools } from './tools-search';
+import { createSkillRunTools } from './tools-skill-run';
+import { createSkillReadTools } from './tools-skill-read';
+import { createRuntimeResolver } from '../skill-runtime/runtime-paths';
 
 /** 中文星期，用于时间展示 */
 const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -648,6 +656,27 @@ const searchTools = createSearchTools({
   verifyRealPath,
 });
 
+/**
+ * 技能脚本执行工具：同样经工厂注入三守卫（复用路径安全）。
+ * ⚠️ electron 依赖并未“消失”，只是被收敛到 runtime-paths.ts 这一层边界适配器：
+ * 本文件（组合根）经上面的 import 间接依赖它，故不得声称「本模块不依赖 electron」。
+ */
+const skillRunTools = createSkillRunTools(
+  { resolveInsideWorkspace, resolveWorkspaceRealRoot, verifyRealPath },
+  createRuntimeResolver(),
+);
+
+/**
+ * 技能说明书读取工具：同样经工厂注入三守卫。
+ * read_skill 是**第一个「根不是 workspaceRoot」的读工具**——它的根是 skillsRoot；
+ * 因守卫语义是「任意根 + 相对路径」，直接复用而无需另造一套越界判断。
+ */
+const skillReadTools = createSkillReadTools({
+  resolveInsideWorkspace,
+  resolveWorkspaceRealRoot,
+  verifyRealPath,
+});
+
 /** 内置工具列表；loop 会取它们的 define(context) 暴露给模型 */
 export const HARNESS_TOOLS: HarnessTool[] = [
   getCurrentTime,
@@ -658,6 +687,8 @@ export const HARNESS_TOOLS: HarnessTool[] = [
   appendDailyNote,
   updatePlan,
   ...searchTools,
+  ...skillRunTools,
+  ...skillReadTools,
 ];
 
 /**

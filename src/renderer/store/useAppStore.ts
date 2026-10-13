@@ -11,6 +11,10 @@ import type {
   ChatSendResponse,
   ConfigSaveInput,
   ConversationSummary,
+  SkillDeleteResult,
+  SkillImportResult,
+  SkillOpenDirResult,
+  SkillSummary,
 } from '../../shared/ipc-channels';
 import {
   AUTH_ERROR_TEXT,
@@ -45,6 +49,10 @@ import {
   renameConversation as apiRenameConversation,
   setConversationPinned as apiSetConversationPinned,
   setConversationWorkspace as apiSetConversationWorkspace,
+  deleteSkill as apiDeleteSkill,
+  importSkills as apiImportSkills,
+  listSkills as apiListSkills,
+  openSkillsDir as apiOpenSkillsDir,
 } from '../lib/api';
 import { applyTheme, resolveTheme } from '../lib/theme';
 
@@ -74,6 +82,9 @@ export function isProviderConfigured(config: PublicConfig | null): boolean {
 export function isAuthed(state: AuthState | null): boolean {
   return state?.state === 'authenticated' || state?.state === 'expired';
 }
+
+/** 右侧主区当前展示的视图：会话聊天 / 技能管理 */
+export type MainView = 'chat' | 'skills';
 
 /** 一轮进行中的流式状态 */
 export interface StreamState {
@@ -105,16 +116,26 @@ export interface AppState {
   unreadConversations: Record<string, true>;
   config: PublicConfig | null;
   settingsOpen: boolean;
+  /** 右侧主区视图（内存态，不持久化） */
+  mainView: MainView;
   /** 当前会话绑定的工作区根目录；为 null 时表示使用默认工作区 */
   activeWorkspaceRoot: string | null;
   /** 当前登录态（脱敏：仅 state / email / userId）；null 表示尚未从主进程取到 */
   auth: AuthState | null;
   /** 是否已完成首次登录态读取；false 时界面停在启动态，避免登录页/主界面闪烁 */
   authChecked: boolean;
+  /** 已安装技能（技能页用）；进入技能页时才拉取 */
+  skills: SkillSummary[];
 
   hydrate: () => Promise<void>;
   refreshConversations: () => Promise<void>;
   selectConversation: (id: string | null) => Promise<void>;
+  /**
+   * 新建会话并选中。
+   * **幂等**：当前已经是「空会话」（已选中且没有任何消息）时不再新建，直接返回。
+   * **合并重入**：已有一次新建在飞时，等它完成而不是再发一次 —— 连点不再堆出多个空会话，
+   * 且调用方 await 之后一定能拿到可用的会话。
+   */
   createConversation: () => Promise<void>;
   removeConversation: (id: string) => Promise<void>;
   /** 重命名会话（先本地乐观更新，IPC 失败回滚） */
@@ -167,6 +188,16 @@ export interface AppState {
   signOut: () => Promise<void>;
   /** 清除本账号本地会话数据；返回被移除的会话数，失败返回 null */
   clearLocalData: () => Promise<number | null>;
+  /** 拉取技能列表；失败静默（面板保留上次结果，不弹错） */
+  refreshSkills: () => Promise<void>;
+  /** 从文件夹导入技能；结果原样返回给面板回显 imported / skipped */
+  importSkills: () => Promise<SkillImportResult>;
+  /** 删除一个技能（二次确认由面板负责，这里始终带 confirm=true 下发） */
+  deleteSkill: (dirName: string) => Promise<SkillDeleteResult>;
+  /** 在系统文件管理器中打开技能根目录 */
+  openSkillsDir: () => Promise<SkillOpenDirResult>;
+  /** 切换右侧主区视图 */
+  setMainView: (view: MainView) => void;
   setSettingsOpen: (open: boolean) => void;
   setError: (error: string | null) => void;
 }
@@ -252,6 +283,13 @@ function toSummary(conversation: {
   };
 }
 
+/**
+ * 进行中的那次「新建会话」；null 表示当前没有。
+ * 用 Promise 而不是布尔：连点时后来者**等这一次**，而不是被丢弃 ——
+ * 否则 Composer 的发送链路（无会话时先补建再发送）会被静默吞掉一次发送。
+ */
+let creatingConversation: Promise<void> | null = null;
+
 export const useAppStore = create<AppState>()((set, get) => ({
   conversations: [],
   activeConversationId: null,
@@ -263,9 +301,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   unreadConversations: {},
   config: null,
   settingsOpen: false,
+  mainView: 'chat',
   activeWorkspaceRoot: null,
   auth: null,
   authChecked: false,
+  skills: [],
 
   /** 启动时水合：拉配置 + 会话列表，并选中最近更新的会话 */
   hydrate: async () => {
@@ -366,19 +406,45 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
-  /** 新建会话并立即选中 */
+  /**
+   * 新建会话并选中。
+   *
+   * 幂等：当前已是「空会话」（有选中会话且无任何消息）时直接返回，不再新建。
+   * 合并重入：已有一次新建在飞时**等它完成**而不是再发一次 —— 连点不再堆积；
+   *   调用方 await 之后一定能拿到可用的会话（否则 Composer 的发送链路会被静默吞掉）。
+   * 调用方（Sidebar）负责把主区切回聊天；本 action **绝不**改 mainView。
+   */
   createConversation: async () => {
+    const { activeConversationId, messages } = get();
+    if (activeConversationId !== null && messages.length === 0) {
+      return;
+    }
+    const inFlight = creatingConversation;
+    if (inFlight !== null) {
+      // 已在新建中：等它结束即可。task 内部已吞掉异常 ⇒ 这里不会抛。
+      await inFlight;
+      return;
+    }
+    // task 内部自吞异常 ⇒ 它永不 reject，故上面 `await inFlight` 的调用方不必再兜一层
+    const task = (async () => {
+      try {
+        const conversation = await apiCreateConversation();
+        set((state) => ({
+          conversations: sortConversationsByPinned([
+            toSummary(conversation),
+            ...state.conversations.filter((item) => item.id !== conversation.id),
+          ]),
+        }));
+        await get().selectConversation(conversation.id);
+      } catch {
+        set({ error: '新建会话失败，请重试' });
+      }
+    })();
+    creatingConversation = task;
     try {
-      const conversation = await apiCreateConversation();
-      set((state) => ({
-        conversations: sortConversationsByPinned([
-          toSummary(conversation),
-          ...state.conversations.filter((item) => item.id !== conversation.id),
-        ]),
-      }));
-      await get().selectConversation(conversation.id);
-    } catch {
-      set({ error: '新建会话失败，请重试' });
+      await task;
+    } finally {
+      creatingConversation = null;
     }
   },
 
@@ -879,6 +945,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         activeWorkspaceRoot: null,
         // 关闭设置弹层：否则下次登录会被自动重新打开
         settingsOpen: false,
+        // 回到会话视图：否则下次登录会被自动留在技能页
+        mainView: 'chat',
         error: null,
         unreadConversations: {},
       }));
@@ -966,7 +1034,54 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /** 拉取技能列表；失败静默（技能列表属次要能力，不打断交互） */
+  refreshSkills: async () => {
+    try {
+      const skills = await apiListSkills();
+      set({ skills });
+    } catch {
+      // 静默：面板保留上一次结果
+    }
+  },
+
+  /** 从文件夹导入技能；只要有导入成功就刷新列表，结构化结果原样返回 */
+  importSkills: async () => {
+    try {
+      const result = await apiImportSkills();
+      if (result.imported.length > 0) {
+        await get().refreshSkills();
+      }
+      return result;
+    } catch {
+      return { ok: false, canceled: false, imported: [], skipped: [], error: '导入失败，请重试' };
+    }
+  },
+
+  /** 删除一个技能；成功后刷新列表 */
+  deleteSkill: async (dirName) => {
+    try {
+      const result = await apiDeleteSkill({ dirName, confirm: true });
+      if (result.ok) {
+        await get().refreshSkills();
+      }
+      return result;
+    } catch {
+      return { ok: false, error: '删除失败，请重试' };
+    }
+  },
+
+  /** 打开技能根目录；失败信息原样返回给面板展示 */
+  openSkillsDir: async () => {
+    try {
+      return await apiOpenSkillsDir();
+    } catch {
+      return { ok: false, reason: '打开技能目录失败' };
+    }
+  },
+
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  setMainView: (view) => set({ mainView: view }),
 
   setError: (error) => set({ error }),
 }));

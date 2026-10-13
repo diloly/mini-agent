@@ -89,8 +89,31 @@ async function executeToolCall(
   let result: ToolResult;
   try {
     if (!tool) {
-      // 模型请求了一个不存在的工具：结构化失败，但照常回灌，不中断整轮
-      result = { ok: false, text: `未知工具：${call.name}` };
+      // 模型请求了一个不存在的工具：结构化失败，但照常回灌，不中断整轮。
+      // 🔴 回灌文案必须给出可执行的下一步，不能只回一句「未知工具」。实测（2026-10-13）：
+      //    模型读完技能文档后，会把文档里写的 CLI 命令当成工具名发出来
+      //    （如 `westock search`、`westock-data:westock.quote`），而本应用没有「执行任意命令」的通用入口。
+      //    只回「未知工具」等于没给任何可用信息，模型只能换个名字反复试，最后放弃。
+      //    故必须讲清三件事：① 有哪些工具可用；② 本应用没有通用命令执行入口 —— 只能运行技能包内
+      //    **已存在的**脚本/程序文件，不能执行任意外部命令；
+      //    ③ 技能类需求该改走哪条路（包内脚本/程序能跑；装到技能目录之外的独立程序不能跑）。
+      const availableNames = harnessToolsFor(toolContext).map(
+        (item) => item.define(toolContext).name,
+      );
+      result = {
+        ok: false,
+        text:
+          `未知工具：${call.name}。本应用没有名为「${call.name}」的工具，` +
+          `也没有「执行任意命令」的通用入口。\n` +
+          `本次实际可用的工具只有这 ${availableNames.length} 个：${availableNames.join('、')}。\n` +
+          `如果「${call.name}」来自某个技能文档里写的命令，请注意本应用的能力边界：` +
+          `① 技能包内**已存在的**脚本/程序文件可以用 run_skill_script 运行（skill = 技能标识符，` +
+          `script = 相对该技能目录的路径，如 scripts/setup.cjs 或 bin/tool.exe，` +
+          `支持 .py / .js / .mjs / .cjs / .exe / .bat / .cmd / .ps1 / .sh）；` +
+          `② 但技能目录**之外**的程序（如装到用户主目录的某个 CLI）越界、执行不了。` +
+          `若该技能的核心能力属于 ②，请如实告诉用户「该技能在当前环境中无法直接使用」` +
+          `（可提示把可执行文件装进技能目录内），不要编造结果，也不要改用其它工具硬凑。`,
+      };
     } else {
       // execute 自行负责解析参数与吞掉异常，返回 { ok, text }
       result = await tool.execute(call.arguments, signal, toolContext);

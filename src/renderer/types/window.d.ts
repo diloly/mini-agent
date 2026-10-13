@@ -26,6 +26,11 @@ import type {
   SignInRequest,
   SignUpRequest,
   SignUpResult,
+  SkillDeleteRequest,
+  SkillDeleteResult,
+  SkillImportResult,
+  SkillOpenDirResult,
+  SkillSummary,
 } from '../../shared/ipc-channels';
 import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 
@@ -85,6 +90,14 @@ export interface MiniAgentApi {
   clearLocalData(request: ClearLocalDataRequest): Promise<ClearLocalDataResult>;
   /** 订阅登录态变化（token 刷新 / 被登出 / 跨窗口）；返回取消订阅函数 */
   onAuthChanged(listener: (state: AuthState) => void): () => void;
+  /** 列出已安装技能 */
+  listSkills(): Promise<SkillSummary[]>;
+  /** 在系统文件管理器中打开技能根目录 */
+  openSkillsDir(): Promise<SkillOpenDirResult>;
+  /** 从文件夹导入技能（主进程弹目录选择框） */
+  importSkills(): Promise<SkillImportResult>;
+  /** 删除一个技能（confirm 为真才执行） */
+  deleteSkill(request: SkillDeleteRequest): Promise<SkillDeleteResult>;
 }
 
 declare global {

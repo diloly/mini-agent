@@ -1,6 +1,6 @@
 # mini-agent 系统架构设计
 
-> 版本：v1.1（UI 层变更：HeroUI v3 + Tailwind v4） ｜ 作者：高见远（架构师） ｜ 输入：许清楚《mini-agent PRD》
+> 版本：v1.2（v1.1 UI 层变更：HeroUI v3 + Tailwind v4；**v1.2 新增 §7.3「新建会话的幂等与合并重入」**） ｜ 作者：高见远（架构师） ｜ 输入：许清楚《mini-agent PRD》
 > 目标：**先给架构，再做最小可用版本（MVP）** —— 只有「会话历史 + 输入 + 输出」，但流式输出必须跑通。
 > HeroUI 版本与集成方式已通过官方文档核实，依据来源见 §1.4.1。
 
@@ -257,7 +257,7 @@ mini-agent/
       ├─ lib/
       │  └─ api.ts                     # window.api 的类型化封装 + requestId 生成 + 事件订阅 helper
       ├─ store/
-      │  └─ useAppStore.ts             # zustand：会话/消息/流式缓冲/loading/error/配置
+      │  └─ useAppStore.ts             # zustand：会话/消息/流式缓冲/loading/error/配置；createConversation 幂等 + 重入闸门（§7.3）
       └─ components/
          ├─ Sidebar.tsx                # 260px 会话栏：新建按钮 + 会话列表（倒序）+ 删除
          ├─ TopBar.tsx                 # 48px 顶栏：会话标题 + 模型下拉（含未配置态）+ 设置齿轮
@@ -744,6 +744,24 @@ export interface ConfigSaveInput {
 | `error` | `chat:error` | 错误块 + 「重试」；上下文保留 |
 | `aborted` | 用户停止 | 保留已生成文本，尾部标记「已停止」 |
 | `unconfigured` | `config.get` 返回 `hasApiKey:false` 或 `model:''` | 下拉灰显「未配置模型」+ 顶栏下方浅黄提示条引导去设置（不静默失败） |
+
+### 7.3 新建会话的幂等与合并重入（`useAppStore.createConversation`）
+
+**背景（三层都「无条件」）**：`Sidebar.tsx` 的「新建会话」按钮**无条件**调用、且无 disabled / 无重入守护；store 的 `createConversation` 无「已是空会话」判据；主进程 `ipc.ts` 的 `handleConversationCreate` 每次 `randomUUID()` + push，**完全无去重**。三者叠加 ⇒ 连点「新建会话」会堆出一串空会话。
+
+**决策：在 store 层做「幂等 + 合并重入」两道闸**（`Sidebar.tsx` 与主进程均**不改**）：
+
+1. **幂等（空会话判据）**：进入即读 `{ activeConversationId, messages }`；若 `activeConversationId !== null && messages.length === 0`（当前已是「空会话」）⇒ **直接返回**，不再新建。语义上把「新建会话」变为「**确保有一个空白会话**」。
+2. **合并重入（在飞时等它）**：模块级闸门 `let creatingConversation: Promise<void> | null = null;`（记录「在飞」的那次新建）。**为什么空会话判据拦不住**：在**有消息**的会话里连点，第一次请求还没返回、`activeConversationId` 仍指向**旧会话** ⇒ 每一次点击都能通过空会话判据。故必须再加一道闸：**后来者 `await` 那一次并直接返回**（不是被丢弃）。**为什么是 Promise 而不是布尔**：布尔闸门在飞时只能「直接 return」，会让 `Composer.tsx` 的发送链路（`!activeConversationId` 时先 `await createConversation()`，其后还有 `if (!activeConversationId) return`）**静默吞掉一次发送**（草稿保留、不丢数据，但「按了没反应」是用户可观察的）；改成「等这一次」后该路径恢复正常，且仍拦住连点堆积。另：`task` 内部 `try/catch` **自吞异常 ⇒ 该 Promise 永不 reject** ⇒ 所有 `await` 它的调用方不必再兜一层（否则会产生未处理的 rejection）。**判据顺序不可颠倒**（**先空会话判据、后闸门**）。
+3. **`finally` 复位**：`creatingConversation = task` 之后，`try { … await task … } finally { creatingConversation = null; }` ⇒ **任何异常都不会卡死闸门**。闸门是**模块级**变量，与账号 / 会话无关；`login` / `logout` 不清它（也不需要，`finally` 保证总会复位）。
+
+**纪律：`mainView` 的切换只写在 `Sidebar.tsx` 的显式点击处**（先 `setMainView('chat')` 再 `void createConversation()`），**action 内绝不碰 `mainView`**。理由有二：① 本仓已定「视图切换只发生在用户的显式导航处」—— 此前把 `mainView` 写进 `selectConversation()` 时，`hydrate()` 与 `finishStream()` 的 discarded 分支会把用户正在看的视图（如技能页）顶掉；② `createConversation` 除 `Sidebar.tsx` 外**还有 `Composer.tsx` 的发送链路**会调用（`!activeConversationId` 时补建会话），若 action 内切视图，等于让一次「数据操作」暗带导航副作用，将来无法追踪是谁切的视图。
+
+**`Composer` 发送链路**：`Composer.tsx` 的 `handleSend` 只在 `!activeConversationId` 时补建会话，该判据在前 ⇒ 补建成功后**正常发送**；且闸门改成「合并重入」后，这条路径上「补建还在飞时又触发」的竞态也一并消除（后来者等同一次、拿到的会话可用）。
+
+**已知边界（如实记录）**：「空会话不新建」⇒ 用户在**空会话**里连点只会停留在同一个空会话；在**有消息**的会话里连点，后续点击被**合并**进同一次，**最终只多出一个空会话**（不是 N 个）。幂等只做在**渲染层**，主进程 `handleConversationCreate` 仍无去重（本通道非幂等）——若将来出现非 UI 渠道的并发创建，需再议。
+
+**代码位置**：`src/renderer/store/useAppStore.ts` L133-139（接口注释）、L286-291（合并重入闸门）、L409-449（实现）；`src/renderer/components/Sidebar.tsx` L302-307（点击处）；`src/main/ipc.ts` L257-278（无去重的 `handleConversationCreate`）。
 
 ---
 

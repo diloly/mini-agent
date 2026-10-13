@@ -1,5 +1,5 @@
 /**
- * 左侧会话栏：新建按钮独占一行 + 会话列表（标题 + hover 出现的「…」菜单）+ 底部账号 / 设置入口。
+ * 左侧会话栏：顶部「技能 / 新建会话」两行左对齐入口 + 会话列表（标题 + hover 出现的「…」菜单）+ 底部账号 / 设置入口。
  *
  * 只读取 store，不直接触碰 IPC；所有数据变更都走 store action。
  * 会话行：标题过长时 hover 横向滚动（见 styles/theme.css 的 .conv-title-*），hover 才显示
@@ -9,7 +9,6 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button } from '@heroui/react';
 import { useAppStore } from '../store/useAppStore';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -53,6 +52,16 @@ function PlusIcon(): ReactNode {
     <StrokeIcon>
       <path d="M12 5v14" />
       <path d="M5 12h14" />
+    </StrokeIcon>
+  );
+}
+
+/** 四角星（技能入口） */
+function SparkIcon(): ReactNode {
+  return (
+    <StrokeIcon>
+      <path d="M12 3.5l1.7 4.3 4.3 1.7-4.3 1.7L12 15.5l-1.7-4.3L6 9.5l4.3-1.7z" />
+      <path d="M18.5 15.4l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8z" />
     </StrokeIcon>
   );
 }
@@ -140,6 +149,8 @@ export default function Sidebar() {
   const setConversationPinned = useAppStore((state) => state.setConversationPinned);
   const selectConversation = useAppStore((state) => state.selectConversation);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
+  const mainView = useAppStore((state) => state.mainView);
+  const setMainView = useAppStore((state) => state.setMainView);
   const auth = useAppStore((state) => state.auth);
   const signOut = useAppStore((state) => state.signOut);
 
@@ -261,13 +272,43 @@ export default function Sidebar() {
 
   return (
     <div className="flex h-full w-full flex-col bg-background-secondary">
-      {/* 新建会话：独占一行（对齐 WorkBuddy 的形态）。
-          用 secondary（实心灰底）而非 ghost：本主题把 ghost 收成了「只有文字的观感」。 */}
-      <div className="shrink-0 px-2 pt-2">
-        <Button variant="secondary" fullWidth size="sm" onPress={() => void createConversation()}>
+      {/* 顶部入口：「技能」在上、「新建会话」在下（用户明确要求的顺序）。
+          两行都是**内容左对齐**的全宽按钮：与底部账号行的文字共用同一条左基线
+          （容器 px-2 + 行内 px-2 ⇒ 内容距侧栏左缘 16px），三处不齐会非常明显。
+
+          这里刻意用原生 <button> 而不是 HeroUI 的按钮组件：后者出厂是内容居中，
+          且 justify-center 出自 @heroui/styles 的**未分层**样式 —— 按本仓实测规律
+          （未分层压过 @layer utilities），我们加 justify-start 也压不过它，左对齐无法可靠实现。
+          底色直接用语义类：--default 与 --surface-secondary 在本仓两套主题下取值完全相同，
+          所以视觉上仍是原来那个「实心灰底按钮」。 */}
+      <div className="flex shrink-0 flex-col gap-1 px-2 pt-2">
+        <button
+          type="button"
+          className={[
+            'flex w-full cursor-pointer items-center gap-2 rounded-[6px] px-2 py-2 text-left text-[13px]',
+            mainView === 'skills'
+              ? 'bg-surface-selected text-fg'
+              : 'bg-surface-secondary text-fg hover:bg-surface-selected',
+          ].join(' ')}
+          onClick={() => setMainView('skills')}
+        >
+          <SparkIcon />
+          技能
+        </button>
+
+        <button
+          type="button"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-[6px] bg-surface-secondary px-2 py-2 text-left text-[13px] text-fg hover:bg-surface-selected"
+          onClick={() => {
+            // 新建会话是「回到对话」的动作：必须先把主区切回聊天，
+            // 否则新会话建在了看不见的技能页后面，用户以为没生效。
+            setMainView('chat');
+            void createConversation();
+          }}
+        >
           <PlusIcon />
           新建会话
-        </Button>
+        </button>
       </div>
 
       {/* 列表：选中项用 surface-selected，悬停用 surface-secondary */}
@@ -329,6 +370,8 @@ export default function Sidebar() {
                         className="min-w-0 flex-1 cursor-pointer text-left"
                         onClick={() => {
                           closeRowMenu();
+                          // 点会话 = 回到对话：否则会停在技能页，看不见刚点开的会话
+                          setMainView('chat');
                           void selectConversation(item.id);
                         }}
                       >

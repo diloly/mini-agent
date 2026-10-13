@@ -36,3 +36,13 @@ nsis:
   shortcutName: ${productName}
   language: "2052"
   deleteAppDataOnUninstall: false
+
+# 把随应用分发的解释器 runtime 复制到 <resources>/runtime/
+# —— asar 内的可执行文件无法 spawn，必须放在 asar 之外；运行时用 process.resourcesPath 拼。
+# from 相对项目根；to 相对打包后的 <resources>。最终路径：<resources>/runtime/python/python.exe。
+# 该目录由 scripts/fetch-runtime.mjs 产出（二进制不入库，见 .gitignore）；缺失时打包会告警/失败。
+extraResources:
+  - from: resources/runtime
+    to: runtime
+    filter:
+      - "**/*"

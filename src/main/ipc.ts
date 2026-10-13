@@ -76,6 +76,10 @@ import {
   readConversations,
 } from './storage';
 import { registerAuthHandlers } from './auth/handlers';
+import { skillsRoot } from './skills/paths';
+import { listSkills } from './skills/registry';
+import { buildSkillsCatalogMessage } from './skills/catalog';
+import { registerSkillHandlers } from './skills/handlers';
 
 /** 拉取模型列表的统一超时（毫秒） */
 const MODELS_TIMEOUT_MS = 8_000;
@@ -633,6 +637,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
           // 本轮是否启用记忆功能，取自本次请求开头读到的配置快照：
           // 生成过程中改开关不影响本轮，下一轮生效（保证同一轮内工具集合与注入一致）
           memoryEnabled: config.memoryEnabled,
+          // 技能根目录（<userData>/skills）：仅供后续 run_skill_script 的路径围栏使用。
+          // 与本轮配置快照同层下发，保证同一轮内「工具集合」与「围栏根」取自同一时刻。
+          skillsRoot: skillsRoot(),
         },
       };
     });
@@ -669,13 +676,23 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     };
 
     // 5) 立即返回，不等待模型响应
-    // 注入两类 system 消息：① 常驻的工作区约定（含每日笔记要求，每轮都要在）；
-    // ② 工作区长期记忆（有内容才注入）。prepared 的 mutator 是同步的、读不了盘，故在此处读盘。
-    // 记忆功能关闭时两者都不注入，也不会去读盘。
+    // 注入三类 system 消息：① 常驻的工作区约定（含每日笔记要求，每轮都要在）；
+    // ② 技能清单（有技能才注入，见 skills/catalog.ts）；③ 工作区长期记忆（有内容才注入）。
+    // prepared 的 mutator 是同步的、读不了盘，故在此处读盘。
+    // 顺序刻意是「能力（技能）在前、历史（记忆）在后」——技能是「我能做什么」，记忆是「发生过什么」。
+    // 记忆功能关闭时不含记忆相关消息，也不会去读记忆盘。
     const workspaceRoot = prepared.toolContext.workspaceRoot;
     const systemMessages: LlmMessage[] = [
       buildWorkspaceRulesMessage(workspaceRoot, config.memoryEnabled),
     ];
+    // 技能清单：listSkills 内部有 mtime 缓存，常规路径很轻；无技能时 catalog 为 null，不注入。
+    // 技能根取自本轮 ToolContext 快照（与围栏根同一时刻），不重新调用 skillsRoot()。
+    const catalog = buildSkillsCatalogMessage(
+      await listSkills(prepared.toolContext.skillsRoot),
+    );
+    if (catalog) {
+      systemMessages.push(catalog);
+    }
     if (config.memoryEnabled) {
       const memory = await readWorkspaceMemory(workspaceRoot);
       if (memory.length > 0) {
@@ -890,6 +907,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.APP_OPEN_EXTERNAL, handleOpenExternal);
     // 账号相关通道（auth:*）：复用本路由私有的 emit，保证全仓只有一处事件推送实现
     registerAuthHandlers(emit);
+    // 技能导入通道（skill:*）：同样复用本路由私有的 emit + 主窗口访问器
+    registerSkillHandlers({ emit, getMainWindow: deps.getMainWindow });
   }
 
   return { register };

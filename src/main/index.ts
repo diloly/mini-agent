@@ -9,6 +9,8 @@ import { BrowserWindow, Menu, app, nativeTheme, session } from 'electron';
 import { createIpcRouter } from './ipc';
 import { ensureStorageReady, readConfig } from './storage';
 import { getAuthService } from './auth/handlers';
+import { ensureSkillsRoot } from './skills/paths';
+import { cleanupStaleImports } from './skills/install';
 import {
   DEFAULT_THEME_MODE,
   isThemeMode,
@@ -126,6 +128,12 @@ function applyNavigationGuards(): void {
 /** 应用启动 */
 async function bootstrap(): Promise<void> {
   await ensureStorageReady();
+  // 技能根目录按需创建（幂等，极轻）：必须在任何工具调用之前就绪，否则 run_skill_script
+  // 会因根目录不存在而失败，且守卫会把「技能根缺失」误报成「工作区目录不存在」。
+  // 与 userData 同层地做这件事，开发者 pnpm dev 一次后目录就自动有了。
+  const skillsDir = ensureSkillsRoot();
+  // 清理上次「导入途中被强杀」留下的 .importing-* 临时目录（幂等、绝不抛，失败只记日志）
+  await cleanupStaleImports(skillsDir);
   // 先按持久化的主题定好窗口底色，再建窗口：show:false + ready-to-show 配合
   // 这个底色，深色启动时全程不会露白
   const config = await readConfig();
