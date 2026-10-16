@@ -77,6 +77,24 @@ function ActionIcon({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
+/** 附件图标：回形针（手绘，与 ActionIcon 同款 24 视图盒） */
+function PaperclipIcon(): ReactNode {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3 w-3 shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
 /** 气泡属性 */
 export interface MessageBubbleProps {
   message: Message;
@@ -134,6 +152,8 @@ export default function MessageBubble(props: MessageBubbleProps) {
   const aborted = message.meta?.finishReason === 'aborted';
   // 工具步骤统一从 message.meta.steps 读取（流式期间也由 upsertStep 写入），无需新增 prop
   const steps = message.meta?.steps;
+  // 用户消息的附件 chip（只读展示；发送前的待发附件在 Composer 里）
+  const attachments = isUser && Array.isArray(message.attachments) ? message.attachments : [];
   // 摘掉 update_plan：它有自己的计划区块，留在工具日志里会重复且噪音大
   const visibleSteps: ToolStep[] = !isUser && Array.isArray(steps)
     ? steps.filter((step) => step.name !== 'update_plan')
@@ -316,7 +336,27 @@ export default function MessageBubble(props: MessageBubbleProps) {
               </div>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap break-words text-[13px] text-fg">{content}</p>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              {/* 附件 chip：只读，hover 显示工作区内相对路径 */}
+              {attachments.length > 0 ? (
+                <div className="flex min-w-0 flex-wrap gap-1">
+                  {attachments.map((file, index) => (
+                    <span
+                      key={`${file.path}-${index}`}
+                      className="flex min-w-0 items-center gap-1 rounded-[4px] bg-surface px-1.5 py-0.5 text-[11px] text-muted"
+                      title={file.path}
+                    >
+                      <PaperclipIcon />
+                      <span className="min-w-0 break-all">{file.name}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {/* 只传文件、没打字时正文为空：不渲染空段落 */}
+              {content.length > 0 ? (
+                <p className="whitespace-pre-wrap break-words text-[13px] text-fg">{content}</p>
+              ) : null}
+            </div>
           )
         ) : timeline.length > 0 ? (
           /* 助手消息：正文与工具调用按时间线交错 —— 工具出现在它实际发生的正文位置之后。

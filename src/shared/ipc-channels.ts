@@ -8,6 +8,7 @@ import type {
   AuthErrorCode,
   ErrorCode,
   FinishReason,
+  MessageAttachment,
   ModelInfo,
   PlanStep,
   ProviderId,
@@ -37,6 +38,8 @@ export const CHANNELS = {
   MODELS_LIST: 'models:list',
   /** 弹出系统目录选择对话框，取用户选中的工作区目录 */
   WORKSPACE_PICK: 'workspace:pick',
+  /** 弹出系统文件选择对话框，把选中的文件复制进工作区 uploads/ 并回传相对路径 */
+  FILE_ATTACH: 'file:attach',
   /** 设置某个会话的工作区（root 传 null 表示恢复默认） */
   CONVERSATION_SET_WORKSPACE: 'conversation:setWorkspace',
   APP_OPEN_SETTINGS: 'app:openSettings',
@@ -121,6 +124,12 @@ export interface ChatSendRequest {
    * 缺省、或会话内找不到该消息时，退化为普通追加。
    */
   replaceMessageId?: string;
+  /**
+   * 本条消息附带的文件（必须先经 file:attach 复制进工作区）。
+   * 主进程会把它写进 user 消息持久化，并在组包时把文件清单注入给模型；
+   * 只接受工作区内的相对路径，含 `..` 段或绝对路径的条目会被丢弃。
+   */
+  attachments?: MessageAttachment[];
 }
 
 /** chat:send 立即返回（不等待模型响应结束） */
@@ -192,6 +201,12 @@ export interface ConfigSaveInput {
     baseUrl?: string;
     model?: string;
   };
+  custom?: {
+    baseUrl?: string;
+    model?: string;
+    /** 明文密钥，仅用于写入；空字符串表示清除 */
+    apiKey?: string;
+  };
   /** 记忆功能总开关；不传表示不改动 */
   memoryEnabled?: boolean;
   /** 界面偏好；目前只有主题，账户相关以后不放这里 */
@@ -219,6 +234,31 @@ export interface PickWorkspaceResult {
   canceled: boolean;
   /** 用户选中的绝对路径；canceled 为 true 时无此字段 */
   path?: string;
+}
+
+/** 选择并上传文件的入参 */
+export interface AttachFilesRequest {
+  /** 目标工作区根目录（绝对路径）；文件将被复制到其下的 uploads/ 目录 */
+  workspaceRoot: string;
+}
+
+/** 一个已复制进工作区的附件（路径为相对工作区的 POSIX 风格形式） */
+export interface AttachedFile {
+  /** 原始文件名（展示用） */
+  name: string;
+  /** 相对工作区的 POSIX 风格路径，如 uploads/20261014-111047-report.pdf */
+  path: string;
+  /** 字节数 */
+  size: number;
+}
+
+/** 选择并上传文件的结果；用户取消对话框时 canceled 为 true */
+export interface AttachFilesResult {
+  canceled: boolean;
+  /** 成功复制进工作区的文件；取消时为空数组 */
+  files: AttachedFile[];
+  /** 部分文件太大 / 复制失败时的中文说明；全部成功时无此字段 */
+  error?: string;
 }
 
 /** 设置会话工作区；root 传 null 表示恢复默认工作区 */

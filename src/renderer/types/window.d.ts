@@ -7,6 +7,7 @@
 import type {
   AuthResult,
   AuthState,
+  AttachFilesResult,
   ChatChunkEvent,
   ChatEndEvent,
   ChatErrorEvent,
@@ -72,6 +73,8 @@ export interface MiniAgentApi {
   onOpenSettings(listener: () => void): () => void;
   /** 弹系统目录选择框：用户选中后返回绝对路径，取消时 canceled 为 true */
   pickWorkspace(): Promise<PickWorkspaceResult>;
+  /** 弹系统文件选择框，把选中的文件复制进指定工作区的 uploads/，回传相对路径清单 */
+  attachFiles(workspaceRoot: string): Promise<AttachFilesResult>;
   /** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */
   setConversationWorkspace(id: string, root: string | null): Promise<OkResult>;
   /** 用系统默认浏览器打开外链（http/https 白名单在主进程侧） */

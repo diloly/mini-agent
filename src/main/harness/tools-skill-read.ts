@@ -19,6 +19,8 @@ import { isSafeSkillRef, SHARED_BIN_DIR, SKILL_ROOT_PREFIX } from '../skills/nam
 import { readSkillFileContent, READ_SKILL_LIMIT_CHARS } from '../skills/content';
 // 支持类型列表的**单一事实来源**（无 electron 的纯逻辑模块）：不在此另写一份副本，避免两处漂移。
 import { SUPPORTED_EXTENSIONS } from '../skill-runtime/interpreter';
+// 平台相关的路径拼接（安装目录示例用）：不手写分隔符，避免 Windows / POSIX 两处漂移。
+import * as path from 'node:path';
 
 /** read_skill 入参 */
 interface ReadSkillArgs {
@@ -118,8 +120,15 @@ function withCapabilityNotice(text: string, declared: string[] | undefined): str
  *    这条规则与 frontmatter 无关，故改为**每次读取都附上**。
  *
  * 与 `withCapabilityNotice` 同样必须插在正文之前、读取侧截断完成之后，保证不被截断吃掉。
+ *
+ * 🔴 2026-10-14 真机补充：安装目录参数必须给**技能根内的绝对路径**。westock 实测：安装脚本的
+ *    `-d` 收相对目录时，落点是**工作区**（run_skill_script 的子进程 cwd 就是工作区），
+ *    装出来的 exe 在技能根之外 ⇒ 运行必被双门守卫拒绝。故本说明直接给出含真实技能根的
+ *    示例路径，不再给 `<技能根>` 这类占位符（模型拿不到真实路径，会自己发明 @/.bin 然后装错地方）。
  */
-function withHostNotice(text: string): string {
+function withHostNotice(text: string, context: ToolContext): string {
+  const skillsRoot = context.skillsRoot;
+  const sharedBinAbs = path.join(skillsRoot, SHARED_BIN_DIR);
   return (
     `⚠ 本应用适配说明（每次读取都会附上）：本应用**没有「执行任意命令」的通用入口**` +
     `（不存在 shell / 终端这类工具）。\n` +
@@ -132,6 +141,12 @@ function withHostNotice(text: string): string {
     `不能含空格分隔的命令片段；写成 script 等于 "quote sh600519" 必然报「脚本不存在」。\n` +
     `若那个程序还不在技能根内，先用该技能的安装脚本（如 scripts/setup.cjs）把它装进技能根再运行；` +
     `装到技能根之外（如用户主目录下的 .local/bin）的程序一律越界、执行不了。\n` +
+    `🔴 安装目录参数（如 -d / --bindir）**必须填技能根内的绝对路径**：脚本执行时的当前目录是**工作区**，` +
+    `填相对目录（bin、.bin、@/.bin 等）会落到工作区里而不是技能根里，装好了也永远运行不了。` +
+    `多个技能共用 → args=["-d", "${sharedBinAbs}"]，装好后 script 填 "${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/<文件名>"；` +
+    `单个技能自用 → args=["-d", "${skillsRoot}/<技能标识符>"]。` +
+    `另外 ${SKILL_ROOT_PREFIX} 只是 run_skill_script 的 script 字段的前缀约定，安装脚本不认识它，` +
+    `传给安装脚本的路径不要带 ${SKILL_ROOT_PREFIX}；script 与 args 的每个值都不能带前导或尾随空格。\n` +
     `🔴 安装与运行都是**你自己的职责**，请连续完成，不要先把步骤推给用户。\n\n` +
     `（以下为 SKILL.md 正文）\n\n` +
     text
@@ -162,8 +177,9 @@ export function createSkillReadTools(guards: WorkspacePathGuards): HarnessTool[]
           `不能直接照搬 —— script 只填程序文件本身，子命令与参数逐项放进 args。` +
           `但技能包内**已存在的脚本/程序文件**可以用 run_skill_script 运行，` +
           `支持的类型：${SUPPORTED_EXTENSIONS.join(' / ')}。` +
-          `若某技能让你先装一个 CLI 再用它查数据，而那个 CLI 装在技能目录**之外**（如用户主目录），` +
-          `就越界、执行不了：请如实告知用户，不要编造结果。`,
+          `若某技能让你先装一个 CLI 再用它查数据，先让安装脚本把程序装进技能根内` +
+          `（安装目录参数必须填技能根内的绝对路径，填相对目录会落到工作区里、装了也运行不了）；` +
+          `若那个 CLI 装在技能目录**之外**（如用户主目录），就越界、执行不了：请如实告知用户，不要编造结果。`,
         parameters: {
           type: 'object',
           properties: {
@@ -228,7 +244,7 @@ export function createSkillReadTools(guards: WorkspacePathGuards): HarnessTool[]
         // 顺序：宿主适配说明（最外层 ⇒ 出现在最前）→ frontmatter 能力提示 → SKILL.md 正文。
         return {
           ok: true,
-          text: withHostNotice(withCapabilityNotice(result.text, result.allowedTools)),
+          text: withHostNotice(withCapabilityNotice(result.text, result.allowedTools), context),
         };
       } catch (error) {
         // 🔴 execute 绝不上抛：任何异常都转成可读文案回灌给模型

@@ -146,6 +146,11 @@ export function buildChildEnv(kind: InterpreterKind, runtimeRoot: string): Recor
     dirs.push(...systemPathDirs());
     env.PATH = dirs.join(path.delimiter);
   }
+  // pip 国内镜像（2026-10-14 用户拍板「方案 C」）：技能按需安装可选依赖时
+  // （SKILL.md 授权的 venv pip install 路径）与技能自带 setup 脚本都会读它。
+  // 不走默认 PyPI 的缘由：国内直连慢，pdfkit 的 setup.bat 曾把 30 秒执行预算耗光。
+  // 常量写死而非从 process.env 透传：镜像地址由我们选定，不引入外部可控输入。
+  env.PIP_INDEX_URL = 'https://mirrors.cloud.tencent.com/pypi/simple';
   return env;
 }
 

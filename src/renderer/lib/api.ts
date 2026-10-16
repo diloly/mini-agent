@@ -8,6 +8,7 @@
 import type {
   AuthResult,
   AuthState,
+  AttachFilesResult,
   ChatChunkEvent,
   ChatEndEvent,
   ChatErrorEvent,
@@ -163,6 +164,11 @@ export function onOpenSettings(listener: () => void): () => void {
 /** 弹系统目录选择框；用户取消时 canceled 为 true，无 path 字段 */
 export function pickWorkspace(): Promise<PickWorkspaceResult> {
   return ensureApi().pickWorkspace();
+}
+
+/** 弹系统文件选择框，把选中的文件复制进指定工作区的 uploads/；用户取消时 canceled 为 true */
+export function attachFiles(workspaceRoot: string): Promise<AttachFilesResult> {
+  return ensureApi().attachFiles(workspaceRoot);
 }
 
 /** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */

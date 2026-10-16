@@ -179,6 +179,12 @@ function renderMarkdown(conversation: Conversation, root: string): string {
     parts.push('---', '');
     parts.push(`## ${index + 1}. ${roleLabel(message.role)} · ${formatTime(message.createdAt)}`);
     parts.push('');
+    // 用户消息的附件：镜像里记一笔相对路径（文件本体已在工作区 uploads/ 下，不复制内容）
+    const attachments = message.attachments;
+    if (message.role === 'user' && Array.isArray(attachments) && attachments.length > 0) {
+      const items = attachments.map((item) => `\`${item.path}\`（${item.name}）`).join('、');
+      parts.push(`**附件**：${items}`, '');
+    }
     // 正文与工具调用按时间线交错（与渲染层共用 shared/timeline.ts，避免两份逻辑漂移）。
     // update_plan 已有独立的「计划」块，先摘掉，免得同一件事写两遍。
     const steps = message.meta?.steps?.filter((step) => step.name !== 'update_plan') ?? [];

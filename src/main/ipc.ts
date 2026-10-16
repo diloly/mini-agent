@@ -17,11 +17,16 @@
  * 再追加本轮消息 —— 复用同一条 chat:send 通道，不额外新增 IPC。
  */
 import { randomUUID } from 'node:crypto';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import type { BrowserWindow, IpcMainInvokeEvent, OpenDialogOptions } from 'electron';
 import { dialog, ipcMain, shell } from 'electron';
 import {
   CHANNELS,
   type AbortChatRequest,
+  type AttachFilesRequest,
+  type AttachFilesResult,
+  type AttachedFile,
   type ChannelName,
   type ChatSendRequest,
   type ChatSendResponse,
@@ -53,6 +58,7 @@ import {
   type ErrorCode,
   type FinishReason,
   type Message,
+  type MessageAttachment,
   type ModelInfo,
   type PlanStep,
   type ProviderId,
@@ -86,6 +92,88 @@ const MODELS_TIMEOUT_MS = 8_000;
 
 /** 允许交给系统浏览器打开的协议白名单（其余一律拒绝，防止 file:// / 自定义协议提权） */
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:']);
+
+/** 附件上传目录名（相对工作区） */
+const UPLOADS_DIR = 'uploads';
+
+/** 单附件大小上限（50 MB）：超出拒收，避免把巨型文件复制进工作区拖垮 IO 与后续检索 */
+const ATTACH_MAX_BYTES = 50 * 1024 * 1024;
+
+/** 安全文件名的最大长度（不含时间戳前缀） */
+const ATTACH_NAME_MAX_CHARS = 80;
+
+/** Windows 文件名非法字符（含控制字符）；统一替换为下划线 */
+const ILLEGAL_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
+/**
+ * 把任意文件名收敛为安全的 basename：
+ * 只取最后一段（防路径穿越）→ 替换 Windows 非法字符 → 去首尾点与空格 → 截断 → 空值兜底。
+ * 用户上传的文件名完全不可信（可能含 `..`、绝对路径、控制字符），必须收敛后再落盘。
+ */
+function sanitizeAttachmentName(rawName: string): string {
+  const base = path.basename(rawName.trim());
+  const cleaned = base.replace(ILLEGAL_NAME_CHARS, '_').replace(/^[.\s]+|[.\s]+$/g, '');
+  const truncated =
+    cleaned.length > ATTACH_NAME_MAX_CHARS ? cleaned.slice(0, ATTACH_NAME_MAX_CHARS) : cleaned;
+  return truncated.length > 0 ? truncated : 'file';
+}
+
+/**
+ * 清洗 IPC 传来的附件列表：三项（name / path / size）俱全才保留，
+ * 路径统一成正斜杠相对形式，且不接受绝对路径与 `..` 段。
+ * 渲染层数据同样不可信——脏 path 落盘后会永久污染消息数据。
+ */
+function normalizeAttachments(value: unknown): MessageAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const collected: MessageAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const { name, path: relPath, size } = item as Partial<MessageAttachment>;
+    if (typeof name !== 'string' || typeof relPath !== 'string' || typeof size !== 'number') {
+      continue;
+    }
+    const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (normalized.length === 0 || normalized.split('/').includes('..')) {
+      continue;
+    }
+    collected.push({
+      name: name.slice(0, 200),
+      path: normalized,
+      size: Number.isFinite(size) && size > 0 ? Math.trunc(size) : 0,
+    });
+  }
+  return collected;
+}
+
+/**
+ * 用户消息的附件注记：把「工作区内文件清单」注入发给模型的 content。
+ *
+ * 模型对上传文件的**全部认知**来自这里——不注入，它就完全不知道用户发了文件。
+ * 三个必须说清的事实：
+ * ① 文件已存进工作区及相对路径（工具只认工作区内相对路径，绝对路径会被守卫拒绝）；
+ * ② 文本文件可用 read_text_file 按上述路径直读；
+ * ③ PDF 等二进制不要用 read_text_file 硬读（它按 utf8 读取只会得到乱码），
+ *    应使用技能清单里对应的技能脚本处理（如 pdf 技能）。
+ */
+function withAttachmentNote(message: Message): string {
+  const attachments =
+    message.role === 'user' && Array.isArray(message.attachments) ? message.attachments : [];
+  if (attachments.length === 0) {
+    return message.content;
+  }
+  const lines = attachments.map((item) => `- ${item.path}（${item.name}）`);
+  const note =
+    `（用户上传了 ${attachments.length} 个文件，已保存到当前工作区，相对路径如下：\n` +
+    `${lines.join('\n')}\n` +
+    `文本文件可用 read_text_file 按上述路径读取；` +
+    `PDF 等二进制文件不要用 read_text_file 读取（按 utf8 读会得到乱码），` +
+    `应使用技能清单中对应的技能脚本处理，例如 pdf 技能。）`;
+  return message.content.length > 0 ? `${message.content}\n\n${note}` : note;
+}
 
 /** 创建路由所需的外部依赖 */
 export interface IpcRouterDeps {
@@ -164,6 +252,7 @@ async function refreshWorkspaceMemory(conversation: Conversation): Promise<void>
 function toPublicConfig(config: AppConfig, lastConversationId: string | undefined): PublicConfig {
   const deepseek = getProviderSettings(config, 'deepseek');
   const ollama = getProviderSettings(config, 'ollama');
+  const custom = getProviderSettings(config, 'custom');
   return {
     activeProviderId: config.activeProviderId,
     providers: {
@@ -176,8 +265,13 @@ function toPublicConfig(config: AppConfig, lastConversationId: string | undefine
         baseUrl: ollama.baseUrl,
         model: ollama.model,
       },
+      custom: {
+        baseUrl: custom.baseUrl,
+        model: custom.model,
+        hasApiKey: hasSecret('custom', custom.apiKeyEnc),
+      },
     },
-    models: { deepseek: [], ollama: [] },
+    models: { deepseek: [], ollama: [], custom: [] },
     safeStorageAvailable: isEncryptionAvailable(),
     defaultWorkspaceRoot: getDefaultWorkspaceRoot(),
     memoryEnabled: config.memoryEnabled,
@@ -214,15 +308,22 @@ function ensureConversationTitle(conversation: Conversation): void {
   if (conversation.title && conversation.title !== DEFAULT_CONVERSATION_TITLE) {
     return;
   }
+  // 「只有附件、没打字」的消息也算有效首条：正文为空时用第一个附件名派生标题，
+  // 否则这类会话在侧栏会永远显示默认标题，用户分不出哪个会话传了什么文件。
   const firstUserMessage = conversation.messages.find(
-    (message) => message.role === 'user' && message.content.trim().length > 0,
+    (message) =>
+      message.role === 'user' &&
+      (message.content.trim().length > 0 || (message.attachments?.length ?? 0) > 0),
   );
-  conversation.title = firstUserMessage ? deriveTitle(firstUserMessage.content) : DEFAULT_CONVERSATION_TITLE;
+  conversation.title = firstUserMessage
+    ? deriveTitle(firstUserMessage.content || firstUserMessage.attachments?.[0]?.name || '')
+    : DEFAULT_CONVERSATION_TITLE;
 }
 
 /**
  * 构造发送给模型的上下文：取最近 N 条。
  * 过滤掉空内容的 assistant 消息（例如本轮占位消息），并保证切片首条不是 assistant。
+ * 用户消息带附件时，由 withAttachmentNote 把工作区内文件清单注入 content。
  */
 function buildContextMessages(messages: Message[], limit = CONTEXT_MESSAGE_LIMIT): LlmMessage[] {
   const meaningful = messages.filter(
@@ -232,7 +333,7 @@ function buildContextMessages(messages: Message[], limit = CONTEXT_MESSAGE_LIMIT
   const startIndex = slice.length > 0 && slice[0].role === 'assistant' ? 1 : 0;
   return slice.slice(startIndex).map((message) => ({
     role: message.role,
-    content: message.content,
+    content: withAttachmentNote(message),
   }));
 }
 
@@ -541,6 +642,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     const conversationId = typeof request?.conversationId === 'string' ? request.conversationId : '';
     const content = typeof request?.content === 'string' ? request.content.trim() : '';
     const replaceMessageId = typeof request?.replaceMessageId === 'string' ? request.replaceMessageId : '';
+    // 附件清洗：只保留三项俱全、路径为工作区内相对形式的条目（脏数据直接丢弃，不报错）
+    const attachments = normalizeAttachments(request.attachments);
 
     const config = await readConfig();
     const providerId = config.activeProviderId;
@@ -556,6 +659,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       role: 'user',
       content,
       createdAt: now,
+      // 仅在真有附件时写：不给历史消息补空数组字段，落盘形态保持干净
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
     const assistantMessage: Message = {
       id: assistantMessageId,
@@ -741,6 +846,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     }> = [
       { id: 'deepseek', settings: patch.deepseek },
       { id: 'ollama', settings: patch.ollama },
+      { id: 'custom', settings: patch.custom },
     ];
 
     await mutateConfig((config) => {
@@ -852,6 +958,94 @@ export function createIpcRouter(deps: IpcRouterDeps) {
   }
 
   /**
+   * 弹出系统文件选择框，把选中的文件复制进工作区 uploads/ 目录。
+   *
+   * 为什么必须在主进程复制：所有工具（read_text_file / list_dir / run_skill_script）的
+   * 路径围栏都绑工作区，文件放在工作区外模型永远读不到；固定落到
+   * `<workspaceRoot>/uploads/` 后，模型凭 list_dir 就能发现这些文件。
+   * 用户取消对话框时不做任何复制，天然无需回滚。
+   *
+   * 文件名安全：原始文件名完全不可信，统一经 sanitizeAttachmentName 收敛，
+   * 再加时间戳前缀防同批 / 跨批重名相互覆盖。
+   */
+  async function handleFileAttach(
+    _event: IpcMainInvokeEvent,
+    request: AttachFilesRequest,
+  ): Promise<AttachFilesResult> {
+    const root = typeof request?.workspaceRoot === 'string' ? request.workspaceRoot.trim() : '';
+    // 绝对路径校验：相对路径的落点取决于主进程 cwd，不可预期
+    if (root.length === 0 || !path.isAbsolute(root)) {
+      return { canceled: false, files: [], error: '工作区路径无效，无法上传文件' };
+    }
+    const window = deps.getMainWindow();
+    const options: OpenDialogOptions = {
+      title: '选择要上传的文件',
+      buttonLabel: '上传',
+      properties: ['openFile', 'multiSelections'],
+    };
+    const result =
+      window && !window.isDestroyed()
+        ? await dialog.showOpenDialog(window, options)
+        : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true, files: [] };
+    }
+
+    const uploadsDir = path.join(root, UPLOADS_DIR);
+    const files: AttachedFile[] = [];
+    const failures: string[] = [];
+    // 本批已用名（小写比较，Windows 文件名不区分大小写）
+    const usedNames = new Set<string>();
+    await mkdir(uploadsDir, { recursive: true });
+
+    for (const sourcePath of result.filePaths) {
+      const displayName = path.basename(sourcePath);
+      const stats = await stat(sourcePath).catch(() => null);
+      if (!stats || !stats.isFile()) {
+        failures.push(`${displayName}：无法读取该文件`);
+        continue;
+      }
+      if (stats.size > ATTACH_MAX_BYTES) {
+        failures.push(`${displayName}：超过 ${Math.floor(ATTACH_MAX_BYTES / (1024 * 1024))} MB 上限`);
+        continue;
+      }
+      // 双重查重：本批已用名 + 磁盘已存在（跨批上传同名文件时时间戳通常已区分，这里兜底）
+      const prefix = `${Date.now()}-`;
+      let fileName = `${prefix}${sanitizeAttachmentName(displayName)}`;
+      let duplicate = 2;
+      while (
+        usedNames.has(fileName.toLowerCase()) ||
+        (await stat(path.join(uploadsDir, fileName)).then(
+          () => true,
+          () => false,
+        ))
+      ) {
+        fileName = `${prefix}${duplicate}-${sanitizeAttachmentName(displayName)}`;
+        duplicate += 1;
+      }
+      usedNames.add(fileName.toLowerCase());
+      try {
+        await copyFile(sourcePath, path.join(uploadsDir, fileName));
+      } catch {
+        failures.push(`${displayName}：复制失败`);
+        continue;
+      }
+      files.push({
+        name: displayName,
+        // 相对工作区的 POSIX 风格路径：这里手工拼接，不经过 path.relative，天然就是正斜杠
+        path: `${UPLOADS_DIR}/${fileName}`,
+        size: stats.size,
+      });
+    }
+
+    return {
+      canceled: false,
+      files,
+      ...(failures.length > 0 ? { error: `以下文件未上传：${failures.join('；')}` } : {}),
+    };
+  }
+
+  /**
    * 设置某个会话的工作区；root 为 null / 空串表示恢复默认工作区。
    * 刻意不更新 updatedAt：工作区是配置属性而非内容变更，
    * 更新它会让侧栏会话列表无谓地跳到最前。
@@ -903,6 +1097,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.CONFIG_SAVE, handleConfigSave);
     registerHandler(CHANNELS.MODELS_LIST, handleModelsList);
     registerHandler(CHANNELS.WORKSPACE_PICK, handleWorkspacePick);
+    registerHandler(CHANNELS.FILE_ATTACH, handleFileAttach);
     registerHandler(CHANNELS.CONVERSATION_SET_WORKSPACE, handleConversationSetWorkspace);
     registerHandler(CHANNELS.APP_OPEN_EXTERNAL, handleOpenExternal);
     // 账号相关通道（auth:*）：复用本路由私有的 emit，保证全仓只有一处事件推送实现

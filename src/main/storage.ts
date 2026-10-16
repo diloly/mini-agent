@@ -117,6 +117,10 @@ export function createDefaultConfig(): AppConfig {
         baseUrl: DEFAULT_BASE_URL.ollama,
         model: DEFAULT_MODEL.ollama,
       },
+      custom: {
+        baseUrl: DEFAULT_BASE_URL.custom,
+        model: DEFAULT_MODEL.custom,
+      },
     },
     memoryEnabled: true,
     ui: { theme: DEFAULT_THEME_MODE },
@@ -142,6 +146,12 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
       ollama: {
         baseUrl: rawProviders.ollama?.baseUrl ?? fallback.providers.ollama.baseUrl,
         model: rawProviders.ollama?.model ?? fallback.providers.ollama.model,
+      },
+      // 白名单式重建：漏了这段，用户存的自定义服务配置读盘即丢
+      custom: {
+        baseUrl: rawProviders.custom?.baseUrl ?? fallback.providers.custom.baseUrl,
+        model: rawProviders.custom?.model ?? fallback.providers.custom.model,
+        apiKeyEnc: rawProviders.custom?.apiKeyEnc,
       },
     },
     // 磁盘文件可被手改：只认真正的布尔值，缺字段 / 字符串 "false" / 非法值一律回退为默认（开启）

@@ -11,6 +11,8 @@
  *    所有失败文案统一由本文件的 execute / render 产出，首句两两互不相同。
  */
 import * as fs from 'node:fs';
+// 平台相关的路径拼接（安装目录示例用）：不手写分隔符，避免 Windows / POSIX 两处漂移。
+import * as path from 'node:path';
 import type { ToolDefinition } from '../providers/types';
 import type { WorkspacePathGuards } from './tools-search';
 import type { RuntimeResolver } from '../skill-runtime/runtime-paths';
@@ -256,9 +258,15 @@ export function createSkillRunTools(
           `.ps1 由 Windows PowerShell 运行，.sh 需要系统已装 bash（Git Bash 或 WSL）。` +
           `一个常见陷阱：有些技能让你先用安装脚本装一个 CLI、再用那个 CLI 查数据 —— ` +
           `本工具**只能运行技能根目录内的文件**；装到技能根之外（如用户主目录下的 .local/bin）的程序一律越界、执行不了。` +
-          `这类技能的安装脚本通常支持指定安装目录，请引导它把程序装进技能根内：` +
-          `单个技能自用 → 装进该技能目录（如 bin/westock.exe，运行时 script 填 "bin/westock.exe"）；` +
-          `多个技能共用 → 装进技能根下的共享目录 ${SHARED_BIN_DIR}（运行时 script 填 "${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/<文件名>"）。` +
+          `🔴 给安装脚本指定安装目录时（如 -d / --bindir 这类参数）**必须填技能根内的绝对路径**：` +
+          `脚本执行时的当前目录是**工作区**，填相对目录（bin、.bin、@/.bin 等）会落到工作区里而不是技能根里，装好了也永远运行不了。` +
+          `多个技能共用 → 装进技能根的共享目录：args=["-d", "${path.join(skillsRoot, SHARED_BIN_DIR)}"]，` +
+          `装好后运行时 script 填 "${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/<文件名>"（如 ${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/westock.exe）；` +
+          `单个技能自用 → 装进该技能自己的目录：args=["-d", "${skillsRoot}/<技能标识符>"]，` +
+          `装好后运行时 script 填该技能目录内的相对路径（如 bin/westock.exe）。` +
+          `另有两个易错点：① ${SKILL_ROOT_PREFIX} 只是**本工具 script 字段**的前缀约定，安装脚本不认识它，` +
+          `传给安装脚本的路径参数不要带 ${SKILL_ROOT_PREFIX}；② script 与 args 的每个值都要逐字准确，` +
+          `前导或尾随空格会让路径变成另一个文件。` +
           `若 ${SHARED_BIN_DIR} 下还没有目标程序，**你自己先跑安装脚本把它装上**（这是你的职责，不要先问用户），` +
           `装好后再运行它。` +
           `确实做不到时请如实告知用户，不要编造结果，也不要改用其它工具硬凑。` +
@@ -393,8 +401,9 @@ export function createSkillRunTools(
               `② 若你要找的是多个技能共用的程序，它在技能根的 ${SHARED_BIN_DIR} 目录，` +
               `写法为 ${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/<文件名>（如 ${SKILL_ROOT_PREFIX}${SHARED_BIN_DIR}/westock.exe）；` +
               `③ 若 ${SHARED_BIN_DIR} 下**还没有**那个程序，说明它尚未安装 —— ` +
-              `先用该技能的安装脚本把它装进去（例：script="scripts/setup.cjs"，` +
-              `args=["-d", "<技能根>\\${SHARED_BIN_DIR}"]），装好后再执行第 ② 步。` +
+              `先用该技能的安装脚本把它装进去，且安装目录参数**必须填技能根内的绝对路径**` +
+              `（脚本执行时的当前目录是工作区，填相对目录会落到工作区里、装了也运行不了）：` +
+              `例 script="scripts/setup.cjs"，args=["-d", "${path.join(skillsRoot, SHARED_BIN_DIR)}"]，装好后再执行第 ② 步。` +
               `不要凭猜测重试同一个路径。`,
           };
         }

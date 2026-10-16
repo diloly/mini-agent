@@ -6,7 +6,7 @@
  */
 
 /** 已接入的模型服务标识 */
-export type ProviderId = 'deepseek' | 'ollama';
+export type ProviderId = 'deepseek' | 'ollama' | 'custom';
 
 /** 主题偏好：跟随系统 / 强制浅色 / 强制深色 */
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -114,6 +114,20 @@ export interface PlanStep {
   status: PlanStepStatus;
 }
 
+/**
+ * 用户上传的文件附件。
+ * path 是**相对工作区**的 POSIX 风格路径（如 uploads/20261014-111047-report.pdf）——
+ * 所有工具与技能脚本都相对工作区解析路径，填绝对路径反而会被越界守卫拒绝。
+ */
+export interface MessageAttachment {
+  /** 原始文件名（展示用，可能含中文 / 空格） */
+  name: string;
+  /** 相对工作区的 POSIX 风格路径 */
+  path: string;
+  /** 字节数 */
+  size: number;
+}
+
 /** 消息的附加信息，仅 assistant 消息会写入 provider / model / 结束状态 */
 export interface MessageMeta {
   providerId?: ProviderId;
@@ -137,6 +151,8 @@ export interface Message {
   content: string;
   createdAt: number;
   meta?: MessageMeta;
+  /** 用户消息附带的文件（已由主进程复制进工作区 uploads/）；无附件时不写 */
+  attachments?: MessageAttachment[];
 }
 
 /** 会话：元数据 + 内嵌全量消息，列表按 updatedAt 倒序 */
@@ -173,6 +189,13 @@ export interface OllamaProviderSettings {
   model: string;
 }
 
+/** 自定义（OpenAI 兼容）配置：apiKeyEnc 为 safeStorage 加密后的 base64 密文，永不出主进程 */
+export interface CustomProviderSettings {
+  baseUrl: string;
+  model: string;
+  apiKeyEnc?: string;
+}
+
 /** 应用配置（与会话数据物理分离，清历史不丢 Key） */
 export interface AppConfig {
   version: 1;
@@ -180,6 +203,7 @@ export interface AppConfig {
   providers: {
     deepseek: DeepSeekProviderSettings;
     ollama: OllamaProviderSettings;
+    custom: CustomProviderSettings;
   };
   /**
    * 记忆功能总开关。关闭后：不做记忆提炼（省掉每轮那次额外模型调用）、
@@ -208,6 +232,7 @@ export interface PublicConfig {
   providers: {
     deepseek: { baseUrl: string; model: string; hasApiKey: boolean };
     ollama: { baseUrl: string; model: string };
+    custom: { baseUrl: string; model: string; hasApiKey: boolean };
   };
   models: Record<ProviderId, ModelInfo[]>;
   safeStorageAvailable: boolean;
@@ -229,12 +254,15 @@ export interface PublicConfig {
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
   deepseek: 'DeepSeek',
   ollama: 'Ollama',
+  custom: '自定义',
 };
 
 /** 各 Provider 的默认 Base URL */
 export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
   deepseek: 'https://api.deepseek.com',
   ollama: 'http://127.0.0.1:11434',
+  // 自定义服务没有可信的默认地址：留空强制用户自填，避免误指向某个具体厂商
+  custom: '',
 };
 
 /** 各 Provider 的默认模型（Ollama 无默认，需用户选择或手填） */
@@ -242,6 +270,8 @@ export const DEFAULT_MODEL: Record<ProviderId, string> = {
   // 旧 id deepseek-chat 已弃用，统一切到 v4 系列
   deepseek: 'deepseek-v4-flash',
   ollama: '',
+  // 自定义服务的模型名由用户自填，不给默认值
+  custom: '',
 };
 
 /** 会话标题回退值 */

@@ -22,6 +22,7 @@ import {
   type ErrorCode,
   type FinishReason,
   type Message,
+  type MessageAttachment,
   type ModelInfo,
   type ProviderId,
   type PublicConfig,
@@ -67,6 +68,11 @@ export function isProviderConfigured(config: PublicConfig | null): boolean {
   if (config.activeProviderId === 'deepseek') {
     const settings = config.providers.deepseek;
     return settings.hasApiKey && settings.model.trim().length > 0;
+  }
+  if (config.activeProviderId === 'custom') {
+    const settings = config.providers.custom;
+    // 自定义服务可能免密钥（本地 vLLM / Ollama 的 /v1）：Base URL 与模型填了就算可用
+    return settings.baseUrl.trim().length > 0 && settings.model.trim().length > 0;
   }
   return config.providers.ollama.model.trim().length > 0;
 }
@@ -142,8 +148,16 @@ export interface AppState {
   renameConversation: (id: string, title: string) => Promise<void>;
   /** 置顶 / 取消置顶（先本地乐观更新并重排，IPC 失败回滚） */
   setConversationPinned: (id: string, pinned: boolean) => Promise<void>;
-  /** 发送消息；传 replaceMessageId 表示「编辑重发」，先丢弃该消息及其之后的全部消息 */
-  sendMessage: (content: string, replaceMessageId?: string) => Promise<void>;
+  /**
+   * 发送消息；传 replaceMessageId 表示「编辑重发」，先丢弃该消息及其之后的全部消息。
+   * attachments 为随消息发送的文件附件（已由主进程复制进工作区，只带相对路径元数据）；
+   * 只有文件、没有文字时也允许发送（content 为空串）。
+   */
+  sendMessage: (
+    content: string,
+    replaceMessageId?: string,
+    attachments?: MessageAttachment[],
+  ) => Promise<void>;
   abortActive: () => Promise<void>;
   appendDelta: (requestId: string, delta: string) => void;
   /** 覆盖式写入某个工具步骤（step.id 相同则替换） */
@@ -506,9 +520,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
    *
    * 传 replaceMessageId 时为「编辑重发」：本地先截断该条及其之后的全部消息（与主进程侧一致），
    * 再用新内容重发，从而让旧回复立刻从界面消失。
+   *
+   * attachments 随消息透传给主进程落盘；只有文件、没有正文时同样放行
+   * （准入门改为「无正文且无附件」才拦截）。
    */
-  sendMessage: async (content, replaceMessageId) => {
+  sendMessage: async (content, replaceMessageId, attachments) => {
     const text = content.trim();
+    // 附件列表归一：调用方可能传 undefined / null，统一成数组
+    const files = Array.isArray(attachments) ? attachments : [];
     const conversationId = get().activeConversationId;
     // 准入门按「当前会话是否已有未丢弃的进行中流」判定，而非全局 loading。
     // 否则在 selectConversation 的 await 窗口内（此时 loading 已短暂复位为 false）
@@ -518,7 +537,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       Object.values(get().streams).some(
         (stream) => stream.conversationId === conversationId && !stream.discarded,
       );
-    if (!text || !conversationId || hasActiveStream) {
+    if ((!text && files.length === 0) || !conversationId || hasActiveStream) {
       return;
     }
 
@@ -537,7 +556,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return {
         messages: [
           ...base,
-          { id: userMessageId, conversationId, role: 'user', content: text, createdAt: now },
+          {
+            id: userMessageId,
+            conversationId,
+            role: 'user',
+            content: text,
+            createdAt: now,
+            // 仅在真有附件时写：与主进程落盘形态保持一致
+            ...(files.length > 0 ? { attachments: files } : {}),
+          },
           {
             id: assistantMessageId,
             conversationId,
@@ -563,6 +590,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         conversationId,
         content: text,
         // 空值不传：无意义地传空串会让主进程多走一次判断，语义也不清晰
+        ...(files.length > 0 ? { attachments: files } : {}),
         ...(replaceMessageId ? { replaceMessageId } : {}),
       });
       get().remapOptimisticIds(
@@ -827,6 +855,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const payload: ConfigSaveInput = { activeProviderId: providerId };
     if (providerId === 'deepseek') {
       payload.deepseek = { model: trimmed };
+    } else if (providerId === 'custom') {
+      payload.custom = { model: trimmed };
     } else {
       payload.ollama = { model: trimmed };
     }

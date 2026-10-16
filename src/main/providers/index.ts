@@ -3,6 +3,7 @@
  * 新增一家厂商只需在此处登记，IPC 层与渲染层无需改动。
  */
 import type { ProviderId } from '../../shared/types';
+import { customProvider } from './custom';
 import { deepseekProvider } from './deepseek';
 import { ollamaProvider } from './ollama';
 import { ProviderError, type LLMProvider } from './types';
@@ -11,6 +12,7 @@ import { ProviderError, type LLMProvider } from './types';
 const REGISTRY: Record<ProviderId, LLMProvider> = {
   deepseek: deepseekProvider,
   ollama: ollamaProvider,
+  custom: customProvider,
 };
 
 /** 类型守卫：判断任意值是否为合法的 providerId */

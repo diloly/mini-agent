@@ -10,6 +10,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type AbortChatRequest,
+  type AttachFilesRequest,
+  type AttachFilesResult,
   type AuthResult,
   type AuthState,
   type ChatChunkEvent,
@@ -109,6 +111,9 @@ const api = {
   /** 弹系统目录选择框，返回用户选中的工作区；用户取消时 canceled 为 true */
   pickWorkspace: (): Promise<PickWorkspaceResult> =>
     ipcRenderer.invoke(CHANNELS.WORKSPACE_PICK),
+  /** 弹系统文件选择框，把选中的文件复制进指定工作区的 uploads/，回传相对路径清单 */
+  attachFiles: (workspaceRoot: string): Promise<AttachFilesResult> =>
+    ipcRenderer.invoke(CHANNELS.FILE_ATTACH, { workspaceRoot } satisfies AttachFilesRequest),
   /** 设置某个会话的工作区（root 传 null 表示恢复默认工作区） */
   setConversationWorkspace: (id: string, root: string | null): Promise<OkResult> =>
     ipcRenderer.invoke(

@@ -33,6 +33,7 @@ import { useAppStore } from '../store/useAppStore';
 const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
   { id: 'deepseek', label: PROVIDER_LABELS.deepseek },
   { id: 'ollama', label: PROVIDER_LABELS.ollama },
+  { id: 'custom', label: PROVIDER_LABELS.custom },
 ];
 
 /** 设置分组 id */
@@ -66,6 +67,10 @@ export default function SettingsDialog() {
   const [apiKey, setApiKey] = useState('');
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL.ollama);
   const [ollamaModel, setOllamaModel] = useState('');
+  // 自定义（OpenAI 兼容）服务：Base URL 必填、API Key 可留空（本地服务常免密钥）
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [customApiKey, setCustomApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   // 当前所在分组：用户上次停在哪个就保持哪个，弹层重开不强制回「模型」
@@ -97,6 +102,9 @@ export default function SettingsDialog() {
     setDeepseekModel(config.providers.deepseek.model);
     setOllamaBaseUrl(config.providers.ollama.baseUrl || DEFAULT_BASE_URL.ollama);
     setOllamaModel(config.providers.ollama.model);
+    setCustomBaseUrl(config.providers.custom.baseUrl);
+    setCustomModel(config.providers.custom.model);
+    setCustomApiKey('');
     setApiKey('');
     setLocalError(null);
   }, [open]);
@@ -119,6 +127,7 @@ export default function SettingsDialog() {
       activeProviderId: providerId,
       deepseek: { baseUrl: deepseekBaseUrl, model: deepseekModel },
       ollama: { baseUrl: ollamaBaseUrl, model: ollamaModel },
+      custom: { baseUrl: customBaseUrl, model: customModel },
     };
     if (apiKey.trim().length > 0) {
       payload.deepseek = {
@@ -127,11 +136,20 @@ export default function SettingsDialog() {
         apiKey: apiKey.trim(),
       };
     }
+    // 自定义服务的密钥同样是「只进不出」：留空不下发，避免误清已存密钥
+    if (customApiKey.trim().length > 0) {
+      payload.custom = {
+        baseUrl: customBaseUrl,
+        model: customModel,
+        apiKey: customApiKey.trim(),
+      };
+    }
     try {
       const next = await saveConfig(payload);
       useAppStore.setState({ config: next });
       await refreshModels(next.activeProviderId);
       setApiKey('');
+      setCustomApiKey('');
       setSettingsOpen(false);
     } catch {
       setLocalError('保存配置失败，请重试');
@@ -182,8 +200,18 @@ export default function SettingsDialog() {
 
   const safeStorageAvailable = config?.safeStorageAvailable ?? true;
   const models = config ? config.models[providerId] ?? [] : [];
-  const modelValue = providerId === 'deepseek' ? deepseekModel : ollamaModel;
-  const setModelValue = providerId === 'deepseek' ? setDeepseekModel : setOllamaModel;
+  const modelValue =
+    providerId === 'deepseek'
+      ? deepseekModel
+      : providerId === 'ollama'
+        ? ollamaModel
+        : customModel;
+  const setModelValue =
+    providerId === 'deepseek'
+      ? setDeepseekModel
+      : providerId === 'ollama'
+        ? setOllamaModel
+        : setCustomModel;
   const currentThemeMode: ThemeMode = config?.ui?.theme ?? 'system';
   // 记忆功能开关：配置缺省（旧版本配置）时按「开启」处理，与主进程默认值一致
   const memoryEnabled = config?.memoryEnabled ?? true;
@@ -268,7 +296,7 @@ export default function SettingsDialog() {
                           value={providerId}
                           onChange={(value: unknown) => {
                             const next = Array.isArray(value) ? value[0] : value;
-                            if (next === 'deepseek' || next === 'ollama') {
+                            if (next === 'deepseek' || next === 'ollama' || next === 'custom') {
                               setProviderId(next);
                             }
                           }}
@@ -350,6 +378,50 @@ export default function SettingsDialog() {
                               placeholder="qwen2.5:7b"
                             />
                           </div>
+                        </>
+                      ) : null}
+
+                      {/* 自定义（OpenAI 兼容）：Base URL、API Key、模型全部自填 */}
+                      {providerId === 'custom' ? (
+                        <>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>Base URL</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={customBaseUrl}
+                              onChange={(event) => setCustomBaseUrl(event.target.value)}
+                              placeholder="https://api.openai.com/v1"
+                            />
+                          </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>
+                              API Key（只进不出，留空表示不改动；本地服务可留空）
+                            </Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              type="password"
+                              autoComplete="off"
+                              value={customApiKey}
+                              onChange={(event) => setCustomApiKey(event.target.value)}
+                              placeholder="sk-..."
+                            />
+                          </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>模型</Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              value={customModel}
+                              onChange={(event) => setCustomModel(event.target.value)}
+                              placeholder="gpt-4o-mini"
+                            />
+                          </div>
+                          <p className="text-[12px] text-muted">
+                            OpenAI 兼容接口：向 Base URL 追加 /chat/completions 与 /models 发起请求；API Key
+                            可留空（本地服务通常不需要）。
+                          </p>
                         </>
                       ) : null}
 

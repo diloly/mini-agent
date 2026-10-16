@@ -11,7 +11,7 @@ import { PROVIDER_LABELS, type ModelInfo, type ProviderId } from '../../shared/t
 import { useAppStore } from '../store/useAppStore';
 
 /** 下拉内每组的展示顺序（固定，不依赖对象键顺序） */
-const PROVIDER_ORDER: ProviderId[] = ['deepseek', 'ollama'];
+const PROVIDER_ORDER: ProviderId[] = ['deepseek', 'ollama', 'custom'];
 
 export default function ModelPicker() {
   const config = useAppStore((state) => state.config);
