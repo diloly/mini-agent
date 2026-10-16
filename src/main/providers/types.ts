@@ -45,6 +45,8 @@ export interface ProviderConfig {
   baseUrl: string;
   model: string;
   apiKey?: string;
+  /** Ollama 专用：上下文窗口（token 数），对应请求体 options.num_ctx；其他 Provider 忽略此字段 */
+  numCtx?: number;
 }
 
 /** 流式回调 */

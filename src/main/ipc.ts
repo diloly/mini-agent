@@ -51,6 +51,7 @@ import {
   DEFAULT_THEME_MODE,
   ERROR_TEXT,
   isThemeMode,
+  isValidNumCtx,
   sortConversationsByPinned,
   TITLE_MAX_LENGTH,
   type AppConfig,
@@ -196,11 +197,12 @@ interface ChatSession {
 /** requestId → 进行中的生成任务 */
 const running = new Map<string, ChatSession>();
 
-/** 各 Provider 的通用配置片段（DeepSeek 额外带 apiKeyEnc） */
+/** 各 Provider 的通用配置片段（DeepSeek 额外带 apiKeyEnc；Ollama 额外带 numCtx） */
 interface ProviderSettingsLike {
   baseUrl: string;
   model: string;
   apiKeyEnc?: string;
+  numCtx?: number;
 }
 
 /** 取配置的某个 Provider 片段（用类型断言避免对 providerId 做分支判断） */
@@ -218,6 +220,7 @@ function buildProviderConfig(config: AppConfig, providerId: ProviderId = config.
     baseUrl: settings.baseUrl,
     model: settings.model,
     apiKey: loadSecret(providerId, settings.apiKeyEnc),
+    numCtx: settings.numCtx,
   };
 }
 
@@ -264,6 +267,7 @@ function toPublicConfig(config: AppConfig, lastConversationId: string | undefine
       ollama: {
         baseUrl: ollama.baseUrl,
         model: ollama.model,
+        numCtx: ollama.numCtx,
       },
       custom: {
         baseUrl: custom.baseUrl,
@@ -842,7 +846,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     const patch: ConfigSaveInput = input ?? {};
     const providerPatches: Array<{
       id: ProviderId;
-      settings?: { baseUrl?: string; model?: string; apiKey?: string };
+      settings?: { baseUrl?: string; model?: string; apiKey?: string; numCtx?: number };
     }> = [
       { id: 'deepseek', settings: patch.deepseek },
       { id: 'ollama', settings: patch.ollama },
@@ -872,6 +876,10 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         if (typeof entry.settings.model === 'string') {
           settings.model = entry.settings.model.trim();
         }
+        if (typeof entry.settings.numCtx === 'number' && isValidNumCtx(entry.settings.numCtx)) {
+          // 只接受合法整数：与 storage.normalizeConfig 同一口径，非法值直接忽略不改动现值
+          settings.numCtx = entry.settings.numCtx;
+        }
         if (typeof entry.settings.apiKey === 'string') {
           // 只进不出：返回密文交给配置落盘；不可用时返回 undefined，仅内存持有
           settings.apiKeyEnc = saveSecret(entry.id, entry.settings.apiKey.trim());
@@ -893,9 +901,22 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     }
     const config = await readConfig();
     const provider = getProvider(providerId);
+    const providerConfig = buildProviderConfig(config, providerId);
+    // 草稿覆盖：只影响本次拉取，不触碰磁盘配置。
+    // Base URL 无条件取表单现值（含空串）—— 用户清空字段就应该拉不到，
+    // 而不是悄悄回落到旧值；apiKey 因为渲染层看不到历史密钥，留空才表示沿用已存值。
+    const draft = request?.draft;
+    if (draft) {
+      if (typeof draft.baseUrl === 'string') {
+        providerConfig.baseUrl = draft.baseUrl.trim();
+      }
+      if (typeof draft.apiKey === 'string' && draft.apiKey.trim().length > 0) {
+        providerConfig.apiKey = draft.apiKey.trim();
+      }
+    }
     const combined = combineSignals([], MODELS_TIMEOUT_MS);
     try {
-      return await provider.listModels(buildProviderConfig(config, providerId), combined.signal);
+      return await provider.listModels(providerConfig, combined.signal);
     } catch {
       // 模型列表是辅助能力：失败时返回空数组，UI 允许用户手填模型名
       return [];

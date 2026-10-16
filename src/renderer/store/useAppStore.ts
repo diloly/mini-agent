@@ -11,6 +11,7 @@ import type {
   ChatSendResponse,
   ConfigSaveInput,
   ConversationSummary,
+  ListModelsDraft,
   SkillDeleteResult,
   SkillImportResult,
   SkillOpenDirResult,
@@ -173,7 +174,8 @@ export interface AppState {
     localAssistantMessageId: string,
     remoteAssistantMessageId: string,
   ) => void;
-  refreshModels: (providerId: ProviderId) => Promise<void>;
+  /** 拉取某个 Provider 的候选模型；draft 为表单未保存现值（仅本次拉取生效，不落盘） */
+  refreshModels: (providerId: ProviderId, draft?: ListModelsDraft) => Promise<void>;
   saveAppConfig: (input: ConfigSaveInput) => Promise<void>;
   /** 在输入区快速切换模型服务 / 模型，不打开设置弹层 */
   switchModel: (providerId: ProviderId, model: string) => Promise<void>;
@@ -816,10 +818,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  /** 拉取某个 Provider 的候选模型 */
-  refreshModels: async (providerId) => {
+  /** 拉取某个 Provider 的候选模型；draft 为表单未保存现值，主进程只对本次拉取应用、不落盘 */
+  refreshModels: async (providerId, draft) => {
     try {
-      const models: ModelInfo[] = await listModels(providerId);
+      const models: ModelInfo[] = await listModels(providerId, draft);
       set((state) =>
         state.config
           ? {

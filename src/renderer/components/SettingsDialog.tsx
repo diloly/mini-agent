@@ -16,10 +16,14 @@ import {
   Select,
 } from '@heroui/react';
 import { useEffect, useRef, useState } from 'react';
-import type { ConfigSaveInput } from '../../shared/ipc-channels';
+import type { ConfigSaveInput, ListModelsDraft } from '../../shared/ipc-channels';
 import {
   AUTH_ERROR_TEXT,
   DEFAULT_BASE_URL,
+  DEFAULT_NUM_CTX,
+  NUM_CTX_MAX,
+  NUM_CTX_MIN,
+  OLLAMA_NUM_CTX_PRESETS,
   PROVIDER_LABELS,
   THEME_MODE_LABELS,
   THEME_MODE_ORDER,
@@ -67,6 +71,9 @@ export default function SettingsDialog() {
   const [apiKey, setApiKey] = useState('');
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_BASE_URL.ollama);
   const [ollamaModel, setOllamaModel] = useState('');
+  // Ollama 上下文长度：'custom' 表示自定义档，其余值为 OLLAMA_NUM_CTX_PRESETS 里的档位（字符串形态）
+  const [ollamaNumCtxSelect, setOllamaNumCtxSelect] = useState(String(DEFAULT_NUM_CTX));
+  const [ollamaNumCtxCustom, setOllamaNumCtxCustom] = useState('');
   // 自定义（OpenAI 兼容）服务：Base URL 必填、API Key 可留空（本地服务常免密钥）
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [customModel, setCustomModel] = useState('');
@@ -102,6 +109,18 @@ export default function SettingsDialog() {
     setDeepseekModel(config.providers.deepseek.model);
     setOllamaBaseUrl(config.providers.ollama.baseUrl || DEFAULT_BASE_URL.ollama);
     setOllamaModel(config.providers.ollama.model);
+    // 上下文长度：命中预设档位就选档位；未命中（旧配置 / 手改过的值）进「自定义」并带入现值
+    const storedNumCtx =
+      typeof config.providers.ollama.numCtx === 'number'
+        ? config.providers.ollama.numCtx
+        : DEFAULT_NUM_CTX;
+    if (OLLAMA_NUM_CTX_PRESETS.includes(storedNumCtx)) {
+      setOllamaNumCtxSelect(String(storedNumCtx));
+      setOllamaNumCtxCustom('');
+    } else {
+      setOllamaNumCtxSelect('custom');
+      setOllamaNumCtxCustom(String(storedNumCtx));
+    }
     setCustomBaseUrl(config.providers.custom.baseUrl);
     setCustomModel(config.providers.custom.model);
     setCustomApiKey('');
@@ -109,9 +128,20 @@ export default function SettingsDialog() {
     setLocalError(null);
   }, [open]);
 
-  /** 重新拉取候选模型 */
+  /**
+   * 重新拉取候选模型。
+   * 用输入框里的现值拉取（不落盘）：用户改完 Base URL 不保存也能直接验证新地址；
+   * 拉不到就回空列表提示手填，任何东西都不会被写进配置 —— 输错的地址不会被保存。
+   * apiKey 与保存同一口径：留空表示沿用已存密钥（历史密钥对界面不可见，由主进程补齐）。
+   */
   function handleFetchModels(): void {
-    void refreshModels(providerId);
+    const draft: ListModelsDraft =
+      providerId === 'deepseek'
+        ? { baseUrl: deepseekBaseUrl, apiKey }
+        : providerId === 'ollama'
+          ? { baseUrl: ollamaBaseUrl }
+          : { baseUrl: customBaseUrl, apiKey: customApiKey };
+    void refreshModels(providerId, draft);
   }
 
   /** 关闭弹层（等价点击遮罩 / 取消） */
@@ -123,10 +153,24 @@ export default function SettingsDialog() {
   async function handleSave(): Promise<void> {
     setSaving(true);
     setLocalError(null);
+    // 自定义上下文长度先做本地校验：不合法就不发起保存，避免把畸形值写进配置
+    let resolvedNumCtx = DEFAULT_NUM_CTX;
+    if (ollamaNumCtxSelect === 'custom') {
+      const raw = ollamaNumCtxCustom.trim();
+      const parsed = Number(raw);
+      if (raw.length === 0 || !Number.isInteger(parsed) || parsed < NUM_CTX_MIN || parsed > NUM_CTX_MAX) {
+        setLocalError(`上下文长度需为 ${NUM_CTX_MIN} 到 ${NUM_CTX_MAX} 之间的整数（token）`);
+        setSaving(false);
+        return;
+      }
+      resolvedNumCtx = parsed;
+    } else {
+      resolvedNumCtx = Number(ollamaNumCtxSelect);
+    }
     const payload: ConfigSaveInput = {
       activeProviderId: providerId,
       deepseek: { baseUrl: deepseekBaseUrl, model: deepseekModel },
-      ollama: { baseUrl: ollamaBaseUrl, model: ollamaModel },
+      ollama: { baseUrl: ollamaBaseUrl, model: ollamaModel, numCtx: resolvedNumCtx },
       custom: { baseUrl: customBaseUrl, model: customModel },
     };
     if (apiKey.trim().length > 0) {
@@ -378,6 +422,54 @@ export default function SettingsDialog() {
                               placeholder="qwen2.5:7b"
                             />
                           </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>上下文长度</Label>
+                            <Select
+                              variant="secondary"
+                              value={ollamaNumCtxSelect}
+                              onChange={(value: unknown) => {
+                                const next = Array.isArray(value) ? value[0] : value;
+                                if (typeof next === 'string') {
+                                  setOllamaNumCtxSelect(next);
+                                }
+                              }}
+                            >
+                              <Select.Trigger>
+                                <Select.Value />
+                                <Select.Indicator />
+                              </Select.Trigger>
+                              <Select.Popover>
+                                <ListBox>
+                                  {OLLAMA_NUM_CTX_PRESETS.map((value) => (
+                                    <ListBox.Item key={value} id={String(value)}>
+                                      <Label>{`${value / 1024}K`}</Label>
+                                    </ListBox.Item>
+                                  ))}
+                                  <ListBox.Item id="custom">
+                                    <Label>自定义</Label>
+                                  </ListBox.Item>
+                                </ListBox>
+                              </Select.Popover>
+                            </Select>
+                          </div>
+                          {ollamaNumCtxSelect === 'custom' ? (
+                            <div>
+                              <Label className={SECTION_LABEL_CLASS}>自定义上下文长度（token）</Label>
+                              <Input
+                                variant="secondary"
+                                fullWidth
+                                type="number"
+                                value={ollamaNumCtxCustom}
+                                onChange={(event) => setOllamaNumCtxCustom(event.target.value)}
+                                placeholder={`${NUM_CTX_MIN} - ${NUM_CTX_MAX}`}
+                              />
+                            </div>
+                          ) : null}
+                          <p className="text-[12px] text-muted">
+                            上下文窗口越大，能携带的对话历史与工具结果越多，但占用内存也越多；
+                            超过模型实际上限时 Ollama 可能拒绝加载或明显变慢。回复说到一半就停，
+                            通常是这里偏小导致的。
+                          </p>
                         </>
                       ) : null}
 

@@ -172,6 +172,11 @@ export async function runAgentLoop(params: {
 
   let text = '';
   const steps: ToolStep[] = [];
+  // 中间轮截断记录（轮号）。旧实现只保留「最后一轮」的 finishReason：模型第 N 轮
+  // （N < 最后一轮）输出撞长度上限被截断时，这个事实整体丢弃 —— 用户看不到，
+  // 模型自己也不知道上一条 assistant 消息不完整、工具参数可能是残缺 JSON，
+  // 会当作无事发生继续说（MEMORY.md Harness 节记录的已知缺口，2026-10-16 补）。
+  const truncatedTurns: number[] = [];
 
   for (let turn = 1; turn <= MAX_TURNS; turn += 1) {
     // 每轮开头先检查中止：用户点停止后尽快退出，避免再发一次请求烧 token
@@ -210,7 +215,15 @@ export async function runAgentLoop(params: {
     // 模型没再要工具 → 这轮就是最终答案
     const toolCalls = result.toolCalls ?? [];
     if (toolCalls.length === 0) {
-      return { text, finishReason: result.finishReason, turns: turn, steps };
+      // 若此前任何一轮被截断，本次运行的事实就是「发生过截断」，finishReason 必须
+      // 报 'length' 而不是最后一轮的 'stop'：被截断的正文已混进 text 里，
+      // 藏不住也不该藏（导出镜像与界面都靠这个值给「未完整结束」的落点）。
+      return {
+        text,
+        finishReason: truncatedTurns.length > 0 ? 'length' : result.finishReason,
+        turns: turn,
+        steps,
+      };
     }
 
     // 把 assistant 这轮的发言（含它想调的工具）原样存回上下文
@@ -225,6 +238,22 @@ export async function runAgentLoop(params: {
     // 同轮多个工具共用同一个值，渲染层据此把它们归为一组插在同一段正文之后。
     for (const call of toolCalls) {
       await executeToolCall(call, convo, steps, callbacks, signal, toolContext, text.length);
+    }
+
+    // 截断回灌：这一轮输出被长度上限切断 ⇒ 显式告诉模型，不让它当作无事发生
+    // （「把不确定性当确定性讲」纪律：部分完成必须回灌 + 给下一步）。
+    // 位置放在工具结果之后（本轮回填的最后一条）：assistant(tool_calls) 与 tool
+    // 消息在协议上必须相邻，system 提示插在两者之间会破坏兼容服务端的位置假设。
+    if (result.finishReason === 'length') {
+      truncatedTurns.push(turn);
+      convo.push({
+        role: 'system',
+        content:
+          `系统提示：你第 ${turn} 轮的输出达到了模型输出长度上限、已被截断，` +
+          `那条 assistant 消息并不完整，本轮请求的工具调用参数（arguments）也可能是不完整的 JSON。` +
+          `若刚执行完的工具结果里出现参数解析类错误，不要原样重发同样的参数：` +
+          `应缩短输出、把这一步拆小重试，或如实告诉用户这一步无法继续。`,
+      });
     }
   }
 

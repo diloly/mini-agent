@@ -187,6 +187,11 @@ export interface DeepSeekProviderSettings {
 export interface OllamaProviderSettings {
   baseUrl: string;
   model: string;
+  /**
+   * 上下文窗口（token 数），对应 Ollama 请求体的 options.num_ctx。
+   * 缺省时由 normalizeConfig 补 DEFAULT_NUM_CTX。
+   */
+  numCtx?: number;
 }
 
 /** 自定义（OpenAI 兼容）配置：apiKeyEnc 为 safeStorage 加密后的 base64 密文，永不出主进程 */
@@ -231,7 +236,7 @@ export interface PublicConfig {
   activeProviderId: ProviderId;
   providers: {
     deepseek: { baseUrl: string; model: string; hasApiKey: boolean };
-    ollama: { baseUrl: string; model: string };
+    ollama: { baseUrl: string; model: string; numCtx?: number };
     custom: { baseUrl: string; model: string; hasApiKey: boolean };
   };
   models: Record<ProviderId, ModelInfo[]>;
@@ -276,6 +281,34 @@ export const DEFAULT_MODEL: Record<ProviderId, string> = {
 
 /** 会话标题回退值 */
 export const DEFAULT_CONVERSATION_TITLE = '新会话';
+
+/**
+ * Ollama 上下文长度预设档位（token）。
+ * 模型自带的默认 num_ctx 通常很小（gemma4 实测只有几千），工具结果全文回灌后
+ * 模型几百字就截断 —— 这个设置就是给用户调大的旋钮。
+ */
+export const OLLAMA_NUM_CTX_PRESETS: number[] = [4096, 8192, 16384, 32768, 65536, 131072];
+
+/** Ollama 上下文长度默认值（token）：32K，兼顾历史长度与内存占用 */
+export const DEFAULT_NUM_CTX = 32768;
+
+/** 自定义上下文长度的合法区间（token） */
+export const NUM_CTX_MIN = 1024;
+export const NUM_CTX_MAX = 262144;
+
+/**
+ * 校验任意值是否为合法的 Ollama 上下文长度。
+ * config.json 是磁盘上的明文文件、允许被手改，非法值（非整数 / 超出区间）
+ * 必须回退默认，否则会把畸形值发给 Ollama。
+ */
+export function isValidNumCtx(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= NUM_CTX_MIN &&
+    value <= NUM_CTX_MAX
+  );
+}
 
 /**
  * 会话列表排序：置顶优先，组内按 updatedAt 倒序。

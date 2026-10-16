@@ -28,6 +28,7 @@ import {
   type ConversationSummary,
   type DeleteConversationRequest,
   type GetConversationRequest,
+  type ListModelsDraft,
   type ListModelsRequest,
   type ModelListResult,
   type OkResult,
@@ -104,8 +105,11 @@ const api = {
   getConfig: (): Promise<PublicConfig> => ipcRenderer.invoke(CHANNELS.CONFIG_GET),
   saveConfig: (input: ConfigSaveInput): Promise<PublicConfig> =>
     ipcRenderer.invoke(CHANNELS.CONFIG_SAVE, input),
-  listModels: (providerId: ProviderId): Promise<ModelListResult> =>
-    ipcRenderer.invoke(CHANNELS.MODELS_LIST, { providerId } satisfies ListModelsRequest),
+  listModels: (providerId: ProviderId, draft?: ListModelsDraft): Promise<ModelListResult> =>
+    ipcRenderer.invoke(
+      CHANNELS.MODELS_LIST,
+      { providerId, draft } satisfies ListModelsRequest,
+    ),
   onOpenSettings: (listener: () => void): (() => void) =>
     subscribe<void>(CHANNELS.APP_OPEN_SETTINGS, () => listener()),
   /** 弹系统目录选择框，返回用户选中的工作区；用户取消时 canceled 为 true */

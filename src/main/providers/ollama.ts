@@ -3,7 +3,7 @@
  * - 对话：POST {baseUrl}/api/chat，响应为 NDJSON（每行一个完整 JSON）
  * - 模型列表：GET {baseUrl}/api/tags，模型名形如 qwen2.5:7b，直接作为 model id 使用
  */
-import { DEFAULT_BASE_URL, PROVIDER_LABELS, type ModelInfo } from '../../shared/types';
+import { DEFAULT_BASE_URL, isValidNumCtx, PROVIDER_LABELS, type ModelInfo } from '../../shared/types';
 import { combineSignals, parseNdjson } from './sse';
 import {
   ProviderError,
@@ -118,6 +118,11 @@ export const ollamaProvider: LLMProvider = {
       if (params.tools && params.tools.length > 0) {
         // 内部 ToolDefinition 是扁平的，发请求前包成 OpenAI 的 { type:'function', function:{...} }
         body.tools = toWireTools(params.tools);
+      }
+      if (typeof config.numCtx === 'number' && isValidNumCtx(config.numCtx)) {
+        // 不显式下发 num_ctx 时 Ollama 用模型自带默认值（gemma4 实测只有几千），
+        // 工具结果全文回灌后模型几百字就以 length 截断 —— 这是「输出中断」的根因。
+        body.options = { num_ctx: config.numCtx };
       }
 
       const response = await fetch(joinApiPath(config.baseUrl || DEFAULT_BASE_URL.ollama, 'api/chat'), {

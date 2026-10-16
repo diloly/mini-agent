@@ -20,6 +20,7 @@ import type {
   ConfigSaveInput,
   Conversation,
   ConversationSummary,
+  ListModelsDraft,
   OkResult,
   OpenExternalResult,
   PickWorkspaceResult,
@@ -67,8 +68,12 @@ export interface MiniAgentApi {
   getConfig(): Promise<PublicConfig>;
   /** 保存配置（apiKey 只进不出） */
   saveConfig(input: ConfigSaveInput): Promise<PublicConfig>;
-  /** 拉取候选模型 */
-  listModels(providerId: ProviderId): Promise<ModelInfo[]>;
+  /**
+   * 拉取候选模型。
+   * draft 为设置页表单的未保存现值（Base URL / 新密钥）：传入即按草稿拉取，不落盘；
+   * 不传则按已保存配置拉取。历史密钥对渲染层不可见，draft.apiKey 留空即表示沿用已存密钥。
+   */
+  listModels(providerId: ProviderId, draft?: ListModelsDraft): Promise<ModelInfo[]>;
   /** 订阅「打开设置」引导事件 */
   onOpenSettings(listener: () => void): () => void;
   /** 弹系统目录选择框：用户选中后返回绝对路径，取消时 canceled 为 true */

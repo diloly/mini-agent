@@ -308,12 +308,16 @@ export function createSkillRunTools(
       try {
         const args = parseArgs<{ skill?: unknown; script?: unknown; args?: unknown }>(rawArgs);
         const skill = args.skill;
-        const script = args.script;
+        const rawScript = args.script;
 
         // ② 入参形状（skill 卡成 1~2 段安全标识符；args 形状受限）
-        if (typeof skill !== 'string' || typeof script !== 'string') {
+        if (typeof skill !== 'string' || typeof rawScript !== 'string') {
           return { ok: false, text: '参数错误：必须提供 skill 与 script（均为字符串）' };
         }
+        // script 解析前统一 trim：模型复制粘贴命令行时常带上前导 / 尾随空格，
+        // 而 " @/.bin/westock.exe" 会因前导空格让 startsWith('@/') 判否、被当成
+        // 技能目录相对路径 ⇒ 必然报「脚本不存在」（10-14 真机实测踩过）。
+        const script = rawScript.trim();
         if (!isSafeSkillRef(skill)) {
           return {
             ok: false,
@@ -323,10 +327,10 @@ export function createSkillRunTools(
               `每段只能含字母 / 数字 / 点 / 下划线 / 连字符且必须以字母或数字开头，最多两段。`,
           };
         }
-        if (script.trim().length === 0) {
+        if (script.length === 0) {
           return { ok: false, text: '参数错误：script 不能为空' };
         }
-        if (script.trim() === SKILL_ROOT_PREFIX) {
+        if (script === SKILL_ROOT_PREFIX) {
           return {
             ok: false,
             text:

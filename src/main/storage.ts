@@ -12,8 +12,10 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_CONVERSATION_TITLE,
   DEFAULT_MODEL,
+  DEFAULT_NUM_CTX,
   DEFAULT_THEME_MODE,
   isThemeMode,
+  isValidNumCtx,
   type AppConfig,
   type Conversation,
   type ProviderId,
@@ -116,6 +118,7 @@ export function createDefaultConfig(): AppConfig {
       ollama: {
         baseUrl: DEFAULT_BASE_URL.ollama,
         model: DEFAULT_MODEL.ollama,
+        numCtx: DEFAULT_NUM_CTX,
       },
       custom: {
         baseUrl: DEFAULT_BASE_URL.custom,
@@ -146,6 +149,10 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
       ollama: {
         baseUrl: rawProviders.ollama?.baseUrl ?? fallback.providers.ollama.baseUrl,
         model: rawProviders.ollama?.model ?? fallback.providers.ollama.model,
+        // 磁盘文件可被手改：非法值（非整数 / 超范围）回退默认，别把畸形值发给 Ollama
+        numCtx: isValidNumCtx(rawProviders.ollama?.numCtx)
+          ? rawProviders.ollama.numCtx
+          : fallback.providers.ollama.numCtx,
       },
       // 白名单式重建：漏了这段，用户存的自定义服务配置读盘即丢
       custom: {

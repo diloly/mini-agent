@@ -21,6 +21,7 @@ import type {
   ConfigSaveInput,
   Conversation,
   ConversationSummary,
+  ListModelsDraft,
   OkResult,
   OpenExternalResult,
   PickWorkspaceResult,
@@ -126,9 +127,9 @@ export function saveConfig(input: ConfigSaveInput): Promise<PublicConfig> {
   return ensureApi().saveConfig(input);
 }
 
-/** 拉取候选模型 */
-export function listModels(providerId: ProviderId): Promise<ModelInfo[]> {
-  return ensureApi().listModels(providerId);
+/** 拉取候选模型；draft 为设置页表单的未保存现值，传入即按草稿拉取（不落盘） */
+export function listModels(providerId: ProviderId, draft?: ListModelsDraft): Promise<ModelInfo[]> {
+  return ensureApi().listModels(providerId, draft);
 }
 
 /** 订阅增量文本；返回取消订阅函数 */

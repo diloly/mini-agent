@@ -267,34 +267,61 @@ function escapeGlobChar(ch: string): string {
   return '\\^$.|+()[]{}'.includes(ch) ? `\\${ch}` : ch;
 }
 
+/** 单个 * 编译出的正则片段 */
+const STAR_SOURCE = '[^/]*';
+/** 两个星号编译出的正则片段 */
+const ANY_SOURCE = '.*';
+
 /**
  * 把 glob 编译成正则（仅支持 * ? **，无新依赖）。
  * - `*`  匹配任意非 '/' 字符；
  * - `?`  匹配单个非 '/' 字符；
  * - `**` 匹配任意字符（可跨 '/'）。
+ *
+ * 连续通配符会先折叠再输出（如三个星号连写、星号紧跟星号中间隔一个斜杠的接法）：
+ * 它们全是「零或更多」量词且类互相包含（`*` ⊆ `**`），折叠语义完全等价，
+ * 但每一个多余的通配片段都会给正则引擎多开一条回溯分支 ——
+ * `(a+)+$` 式回溯爆炸在连续通配符构成的 pattern 上同样成立（GLOB_MAX_LENGTH
+ * 只挡 pattern 长度，挡不住量词组合）。MEMORY-REFERENCE 记录的 glob 残留
+ * 缺口（2026-10-16 修）就是指这一类。
  */
 export function globToRegExp(pattern: string): RegExp {
   let source = '';
   let index = 0;
+  // 上一个已输出的通配片段类型，供折叠判断
+  let lastWildcard: 'none' | 'star' | 'any' = 'none';
   while (index < pattern.length) {
     const ch = pattern[index];
     if (ch === '*') {
-      if (pattern[index + 1] === '*') {
-        source += '.*';
-        index += 2;
+      const isDouble = pattern[index + 1] === '*';
+      index += isDouble ? 2 : 1;
+      if (isDouble) {
+        if (lastWildcard === 'star') {
+          // 形如 */** 的接法：前面的 [^/]* 被 .* 完全覆盖，撤掉它只留一个 .*
+          source = source.slice(0, -STAR_SOURCE.length);
+        }
+        if (lastWildcard !== 'any') {
+          source += ANY_SOURCE;
+        }
+        lastWildcard = 'any';
         continue;
       }
-      source += '[^/]*';
-      index += 1;
+      // 单个 * 跟在 * 或 ** 后面同样冗余（同一个片段已能覆盖它）
+      if (lastWildcard === 'none') {
+        source += STAR_SOURCE;
+        lastWildcard = 'star';
+      }
       continue;
     }
     if (ch === '?') {
       source += '[^/]';
       index += 1;
+      lastWildcard = 'none';
       continue;
     }
     source += escapeGlobChar(ch);
     index += 1;
+    lastWildcard = 'none';
   }
   return new RegExp(`^${source}$`);
 }

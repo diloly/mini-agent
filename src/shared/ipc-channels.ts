@@ -184,6 +184,20 @@ export interface ChatPlanEvent {
 /** 拉取候选模型 */
 export interface ListModelsRequest {
   providerId: ProviderId;
+  /**
+   * 渲染层表单的未保存草稿：仅对本次拉取生效，主进程绝不落盘。
+   * 存在意义：用户在设置页改完 Base URL 还没点保存就想拉列表验证，
+   * 草稿让这次拉取用输入框里的现值，而不是磁盘上的旧值。
+   */
+  draft?: ListModelsDraft;
+}
+
+/** 拉取模型时可覆盖的表单字段（未保存，仅本次生效） */
+export interface ListModelsDraft {
+  /** Base URL 现值；空串表示用户已清空该字段（此时应拉不到，而不是悄悄用旧值） */
+  baseUrl?: string;
+  /** 与保存同一口径：非空 = 用新值拉取；留空 = 沿用已存密钥（历史密钥对渲染层不可见，只能由主进程补齐） */
+  apiKey?: string;
 }
 
 /**
@@ -200,6 +214,8 @@ export interface ConfigSaveInput {
   ollama?: {
     baseUrl?: string;
     model?: string;
+    /** 上下文窗口（token）；不传表示不改动 */
+    numCtx?: number;
   };
   custom?: {
     baseUrl?: string;
