@@ -84,7 +84,7 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
  * 原子写：先写临时文件，再 rename 覆盖目标文件。
  * 任何一步失败都不会留下半截的目标文件。
  */
-async function atomicWrite(filePath: string, data: unknown): Promise<void> {
+export async function atomicWrite(filePath: string, data: unknown): Promise<void> {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');

@@ -12,6 +12,8 @@ import type {
   ChatChunkEvent,
   ChatEndEvent,
   ChatErrorEvent,
+  ChatResumeRequest,
+  ChatResumeResponse,
   ChatSendRequest,
   ChatSendResponse,
   ChatStepEvent,
@@ -130,6 +132,11 @@ export function saveConfig(input: ConfigSaveInput): Promise<PublicConfig> {
 /** 拉取候选模型；draft 为设置页表单的未保存现值，传入即按草稿拉取（不落盘） */
 export function listModels(providerId: ProviderId, draft?: ListModelsDraft): Promise<ModelInfo[]> {
   return ensureApi().listModels(providerId, draft);
+}
+
+/** 续跑：接着一条被中止的 assistant 消息从 checkpoint 继续跑 */
+export function resumeChat(request: ChatResumeRequest): Promise<ChatResumeResponse> {
+  return ensureApi().resumeChat(request);
 }
 
 /** 订阅增量文本；返回取消订阅函数 */

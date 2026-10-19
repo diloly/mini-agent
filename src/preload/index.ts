@@ -18,6 +18,8 @@ import {
   type ChatEndEvent,
   type ChatErrorEvent,
   type ChatPlanEvent,
+  type ChatResumeRequest,
+  type ChatResumeResponse,
   type ChatSendRequest,
   type ChatSendResponse,
   type ChatStepEvent,
@@ -110,6 +112,8 @@ const api = {
       CHANNELS.MODELS_LIST,
       { providerId, draft } satisfies ListModelsRequest,
     ),
+  resumeChat: (request: ChatResumeRequest): Promise<ChatResumeResponse> =>
+    ipcRenderer.invoke(CHANNELS.CHAT_RESUME, request),
   onOpenSettings: (listener: () => void): (() => void) =>
     subscribe<void>(CHANNELS.APP_OPEN_SETTINGS, () => listener()),
   /** 弹系统目录选择框，返回用户选中的工作区；用户取消时 canceled 为 true */

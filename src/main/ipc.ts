@@ -28,6 +28,8 @@ import {
   type AttachFilesResult,
   type AttachedFile,
   type ChannelName,
+  type ChatResumeRequest,
+  type ChatResumeResponse,
   type ChatSendRequest,
   type ChatSendResponse,
   type ChatStepEvent,
@@ -75,6 +77,7 @@ import { exportConversationMarkdown } from './conversation-export';
 import { buildMemorySystemMessage, buildWorkspaceRulesMessage, extractWorkspaceMemory, readWorkspaceMemory } from './workspace-memory';
 import { hasSecret, isEncryptionAvailable, loadSecret, saveSecret } from './secret';
 import {
+  getActiveAccountId,
   mutateAccountMeta,
   mutateConfig,
   mutateConversations,
@@ -82,6 +85,7 @@ import {
   readConfig,
   readConversations,
 } from './storage';
+import * as checkpoint from './checkpoint';
 import { registerAuthHandlers } from './auth/handlers';
 import { skillsRoot } from './skills/paths';
 import { listSkills } from './skills/registry';
@@ -105,6 +109,15 @@ const ATTACH_NAME_MAX_CHARS = 80;
 
 /** Windows 文件名非法字符（含控制字符）；统一替换为下划线 */
 const ILLEGAL_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
+/**
+ * 续跑说明：注入 convo 末尾的 system 消息，告诉模型「这是接着中断前的上下文继续」。
+ * 重点是已经做完的步骤不要重复执行——否则模型会把中断前已完成的工具调用再跑一遍。
+ * 由 harness loop 在半截工具批次补全完成后追加（保证 assistant(tool_calls) 与
+ * tool 消息的协议相邻性不被破坏）。
+ */
+const RESUME_NOTE =
+  '系统提示：这是续跑。你上一轮的执行被中断（用户主动停止或进程意外退出），以上上下文是中断前的完整状态。上一批工具调用中未落盘的结果已补跑完成。请接着完成原任务：已经做完的步骤不要重复执行，直接从当前状态继续。';
 
 /**
  * 把任意文件名收敛为安全的 basename：
@@ -411,11 +424,28 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         list.splice(index, 1);
       }
     });
-    // 该会话上可能还有正在生成的任务：一并中止，避免继续烧 token 并往已删会话里落盘
+    // 该会话上可能还有正在生成的任务：先中止（信号设置即生效，loop 在下一个检查点
+    // 退出，runChatStream 的 finally 会清掉 running 里的 session）。
     for (const session of running.values()) {
       if (session.conversationId === id) {
         session.controller.abort();
       }
+    }
+    // 等待在飞任务真正退出后再删 checkpoint：否则 loop 的下一版快照可能在删除完成
+    // 之后才写盘，留下「会话已删、文件还在」的孤儿 checkpoint（无法再定位删除，
+    // 纯磁盘泄漏）。等待有 10s 上限——删会话本身绝不能被在飞的续跑任务挂住。
+    const deadline = Date.now() + 10_000;
+    while (
+      [...running.values()].some((session) => session.conversationId === id) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // 删会话连带清它的 checkpoint：续跑数据是会话级附属态，不应比会话活得更久。
+    // best-effort：删除失败不影响删会话本身，残留文件的后果仅是「继续」找不到状态。
+    const accountId = getActiveAccountId();
+    if (accountId) {
+      await checkpoint.deleteCheckpointsForConversation(accountId, id).catch(() => undefined);
     }
     await mutateAccountMeta((meta) => {
       if (meta.lastConversationId === id) {
@@ -503,6 +533,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       steps?: ToolStep[];
       plan?: PlanStep[];
       turns?: number;
+      resumable?: boolean;
     },
   ): Promise<void> {
     const exportedConversation = await mutateConversations<Conversation | null>((list) => {
@@ -518,6 +549,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       message.meta = {
         ...(message.meta ?? {}),
         finishReason: meta.finishReason,
+        // 无条件写（false 也写）：续跑成功完成时要清掉中止时写下的 true；
+        // 老消息不受影响，只有被 finalize 的本轮消息会带上这个字段
+        resumable: Boolean(meta.resumable),
         errorCode: meta.errorCode,
         errorText: meta.errorText,
         // 工具步骤与轮数仅在确实拿到时才写入，避免把 undefined 盖掉已有值
@@ -549,12 +583,27 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     messages: LlmMessage[],
     providerId: ProviderId,
     toolContext: ToolContext,
+    options?: {
+      /** 续跑时中断前已生成的正文（首跑不传） */
+      initialText?: string;
+      /** 续跑起始轮号 = 中断时已消耗轮数 +1（首跑不传） */
+      startTurn?: number;
+      /** 续跑时预置的历史工具步骤（收尾落盘与 abort 时一并写回，界面不丢中断前的记录） */
+      seedSteps?: ToolStep[];
+      /** 续跑说明；loop 在半截工具批次补全完成后追加到 convo 末尾 */
+      resumeNote?: string;
+    },
   ): Promise<void> {
     // 取 Provider 与读配置必须留在 try 内：一旦抛错而 finally 不执行，
     // running 里就会永久残留一条 requestId，渲染层的 loading 再也退不出去
     let provider: LLMProvider | null = null;
     // 工具步骤按 id 去重收集，供所有收尾分支（成功 / 中止 / 异常）统一落盘
     const stepMap = new Map<string, ToolStep>();
+    // 续跑 seed：把被中止消息 meta.steps 里的历史步骤预先灌进 stepMap，
+    // 收尾时与续跑新产生的步骤合并写回——中断前的执行记录不会从界面上消失
+    for (const seedStep of options?.seedSteps ?? []) {
+      stepMap.set(seedStep.id, seedStep);
+    }
     try {
       provider = getProvider(providerId);
       const config = await readConfig();
@@ -566,6 +615,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         messages,
         signal: session.controller.signal,
         toolContext,
+        initialText: options?.initialText,
+        startTurn: options?.startTurn,
+        resumeNote: options?.resumeNote,
         callbacks: {
           onDelta: (delta) => {
             if (!delta) {
@@ -587,51 +639,100 @@ export function createIpcRouter(deps: IpcRouterDeps) {
               step,
             } satisfies ChatStepEvent);
           },
+          onCheckpoint: (convo, turn) => {
+            // 每个工具结果回填后落一版「可续跑态」：被动崩溃（进程被杀）时
+            // 磁盘上仍有最近一次完整 convo，用户点「继续」才能接着中断前的上下文跑。
+            // checkpoint 写失败绝不能打断生成，故只吞异常不重抛。
+            void checkpoint
+              .writeCheckpoint({
+                version: 1,
+                conversationId: session.conversationId,
+                assistantMessageId: session.assistantMessageId,
+                turn,
+                convo,
+                savedAt: Date.now(),
+              })
+              .catch(() => undefined);
+          },
         },
       });
+      // 成功收尾：checkpoint 使命完成，先删再 finalize。
+      // 无账号（未登录）时本就写不出 checkpoint 文件，直接跳过删除。
+      const successAccountId = getActiveAccountId();
+      if (successAccountId) {
+        await checkpoint
+          .deleteCheckpoint(successAccountId, session.conversationId, session.assistantMessageId)
+          .catch(() => undefined);
+      }
       await finalizeAssistantMessage(session, result.text, {
         finishReason: result.finishReason,
         steps: Array.from(stepMap.values()),
         plan: session.plan,
         turns: result.turns,
+        resumable: false,
       });
       emit(CHANNELS.CHAT_END, {
         requestId: session.requestId,
         messageId: session.assistantMessageId,
         content: result.text,
         finishReason: result.finishReason,
+        resumable: false,
       });
     } catch (error) {
       const providerError = toProviderError(error, {
         unreachableMessage: provider ? provider.unreachableHint : ERROR_TEXT.UNREACHABLE,
       });
       if (providerError.code === 'ABORTED') {
-        // 用户主动停止：已生成内容照常落盘，不算错误（工具步骤也一并保留）
+        // 用户主动停止：已生成内容照常落盘，不算错误（工具步骤也一并保留）。
+        // resumable 按 checkpoint 是否存在判定：loop 的 onCheckpoint 已在中止前
+        // 落过快照（含半截批次补跑后的最新态），界面据此显示「继续」。
+        const abortAccountId = getActiveAccountId();
+        const resumable = abortAccountId
+          ? (await checkpoint.readCheckpoint(
+              abortAccountId,
+              session.conversationId,
+              session.assistantMessageId,
+            )) !== null
+          : false;
         await finalizeAssistantMessage(session, session.text, {
           finishReason: 'aborted',
           steps: Array.from(stepMap.values()),
           plan: session.plan,
+          resumable,
         });
         emit(CHANNELS.CHAT_END, {
           requestId: session.requestId,
           messageId: session.assistantMessageId,
           content: session.text,
           finishReason: 'aborted',
+          resumable,
         });
         return;
       }
+      // 异常收尾：同样按 checkpoint 存在性判定 resumable——
+      // 被动崩溃场景（如进程被杀前的最后一次 loop 回调已落盘）重启后也应能续跑
+      const errorAccountId = getActiveAccountId();
+      const errorResumable = errorAccountId
+        ? (await checkpoint.readCheckpoint(
+            errorAccountId,
+            session.conversationId,
+            session.assistantMessageId,
+          )) !== null
+        : false;
       await finalizeAssistantMessage(session, session.text, {
         finishReason: 'error',
         errorCode: providerError.code,
         errorText: providerError.userMessage,
         steps: Array.from(stepMap.values()),
         plan: session.plan,
+        resumable: errorResumable,
       });
       emit(CHANNELS.CHAT_ERROR, {
         requestId: session.requestId,
         messageId: session.assistantMessageId,
         code: providerError.code,
         message: providerError.userMessage,
+        resumable: errorResumable,
       });
     } finally {
       running.delete(session.requestId);
@@ -708,9 +809,14 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     }
 
     // 2) 追加 user 消息与 assistant 占位消息并落盘，同时取出上下文与工具执行上下文
+    // 编辑重发被丢弃消息中的 assistant id：mutator 是同步的、读不了盘，
+    // 先在 mutator 内把 id 收集出来，checkpoint 的删除挪到 mutateConversations
+    // 返回之后执行（见下方 removedAssistantIds 循环）
+    const removedAssistantIds: string[] = [];
     const prepared = await mutateConversations<{
       messages: LlmMessage[];
       toolContext: ToolContext;
+      removedAssistantIds: string[];
     } | null>((list) => {
       const conversation = list.find((item) => item.id === conversationId);
       if (!conversation) {
@@ -722,6 +828,13 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       if (replaceMessageId) {
         const index = conversation.messages.findIndex((item) => item.id === replaceMessageId);
         if (index >= 0) {
+          // 被丢弃消息里的 assistant id：它们的 checkpoint 属于「基于旧提问的生成」，
+          // 编辑重发后不能再可续跑，逐个记下待删
+          for (const removed of conversation.messages.slice(index)) {
+            if (removed.role === 'assistant') {
+              removedAssistantIds.push(removed.id);
+            }
+          }
           conversation.messages.splice(index);
           // 首条用户消息可能被一起丢弃，标题需要重新派生：
           // ensureConversationTitle 只在标题仍是 DEFAULT_CONVERSATION_TITLE 时才动作，
@@ -750,6 +863,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
           // 与本轮配置快照同层下发，保证同一轮内「工具集合」与「围栏根」取自同一时刻。
           skillsRoot: skillsRoot(),
         },
+        removedAssistantIds,
       };
     });
 
@@ -761,6 +875,18 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         message: '会话不存在，请新建会话',
       });
       return { requestId, userMessageId, assistantMessageId };
+    }
+
+    // 编辑重发丢掉的旧 assistant 消息：其 checkpoint 不能留。
+    // 续跑入口按 assistantMessageId 定位检查点，残留文件会让「继续」复活一段
+    // 已被用户主动抛弃的上下文。无账号时本就无 checkpoint，直接跳过。
+    const discardAccountId = getActiveAccountId();
+    if (discardAccountId) {
+      for (const removedId of prepared.removedAssistantIds) {
+        void checkpoint
+          .deleteCheckpoint(discardAccountId, conversationId, removedId)
+          .catch(() => undefined);
+      }
     }
 
     // 4) 登记中止控制器
@@ -832,6 +958,166 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       session.controller.abort();
     }
     return { ok: true };
+  }
+
+  /**
+   * 续跑：接着一条被中止的 assistant 消息，用中断前落盘的 checkpoint 继续生成。
+   * 与 chat:send 的关键差异：不追加任何消息、不新建占位——user 提问与被中止的
+   * assistant 消息都已在会话里，本轮只是把那条 assistant 消息接着写完。
+   *
+   * 流程：校验入参 → 读 checkpoint → 校验 Provider 配置 → 只读取出会话与目标消息 →
+   * 建 session（seed 计划与历史步骤）→ 以 cp.convo 为上下文起跑（startTurn = 中断轮数 +1）。
+   */
+  async function handleChatResume(
+    _event: IpcMainInvokeEvent,
+    request: ChatResumeRequest,
+  ): Promise<ChatResumeResponse> {
+    const requestId = typeof request?.requestId === 'string' ? request.requestId : '';
+    const conversationId = typeof request?.conversationId === 'string' ? request.conversationId : '';
+    const assistantMessageId =
+      typeof request?.assistantMessageId === 'string' ? request.assistantMessageId : '';
+    // 三项参数缺一不可：checkpoint 按 conversationId__assistantMessageId 定位
+    if (!requestId || !conversationId || !assistantMessageId) {
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'UNKNOWN',
+        message: '续跑参数不完整',
+      });
+      return { requestId };
+    }
+
+    // 进程内并发门（纵深防御）：渲染层 resumeChat 已有同步门挡双击，但 IPC 层自身
+    // 也要防「绕过渲染层」的路径（多窗口、devtools 手调、事件重放）——否则会双跑
+    // loop：并发写同一 checkpoint 文件、并发 finalize 同一 assistant 消息。
+    // 粒度与渲染层 sendMessage 的门一致：一个会话同时只允许一轮在飞。
+    if ([...running.values()].some((session) => session.conversationId === conversationId)) {
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'UNKNOWN',
+        message: '该会话正在生成中，请等待当前任务完成后再续跑',
+      });
+      return { requestId };
+    }
+
+    // 读 checkpoint：无账号（未登录）时不存在任何 checkpoint 文件
+    const accountId = getActiveAccountId();
+    const cp = accountId
+      ? await checkpoint.readCheckpoint(accountId, conversationId, assistantMessageId)
+      : null;
+    // 双重校验：文件不存在，或文件内容与会话参数不一致（防串会话——文件名含两 id，
+    // 但磁盘文件允许被手改，readCheckpoint 的校验管不了「文件名与内容的串号」）
+    if (!cp || cp.conversationId !== conversationId || cp.assistantMessageId !== assistantMessageId) {
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'UNKNOWN',
+        message:
+          '没有找到这一轮的续跑状态（检查点已被清理或该轮本就无从续跑），请直接重新提问',
+      });
+      return { requestId };
+    }
+
+    const config = await readConfig();
+    const providerId = config.activeProviderId;
+    const provider = getProvider(providerId);
+    const providerConfig = buildProviderConfig(config, providerId);
+    if (!provider.isConfigured(providerConfig)) {
+      // 与 chat:send 同口径：未配置时提示 + 顺带把设置弹层推给渲染层
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'NOT_CONFIGURED',
+        message: errorMessage('NOT_CONFIGURED'),
+      });
+      emit<void>(CHANNELS.APP_OPEN_SETTINGS, undefined);
+      return { requestId };
+    }
+
+    // 只读取出会话与目标 assistant 消息（与 chat:send 的 prepared 同构，但不 push 任何消息）
+    const prepared = await mutateConversations<{
+      partialText: string;
+      toolContext: ToolContext;
+      seedSteps: ToolStep[];
+      plan?: PlanStep[];
+    } | null>((list) => {
+      const conversation = list.find((item) => item.id === conversationId);
+      if (!conversation) {
+        return null;
+      }
+      const targetMessage = conversation.messages.find((item) => item.id === assistantMessageId);
+      if (!targetMessage || targetMessage.role !== 'assistant') {
+        return null;
+      }
+      return {
+        // 中断前已生成的正文：既作 loop 的 initialText，也作 session.text 的初值
+        partialText: targetMessage.content,
+        toolContext: {
+          workspaceRoot: resolveWorkspaceRoot(conversation),
+          backupRoot: getBackupRoot(),
+          conversationId,
+          memoryEnabled: config.memoryEnabled,
+          skillsRoot: skillsRoot(),
+        },
+        // 历史工具步骤 seed：续跑收尾时与新一轮步骤合并落盘，界面不丢中断前的记录
+        seedSteps: targetMessage.meta?.steps ?? [],
+        // 计划清单 seed：上一轮 update_plan 维护的快照，随续跑沿续
+        plan: targetMessage.meta?.plan,
+      };
+    });
+
+    if (!prepared) {
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'UNKNOWN',
+        message: '会话或消息不存在',
+      });
+      return { requestId };
+    }
+
+    const session: ChatSession = {
+      requestId,
+      conversationId,
+      assistantMessageId,
+      controller: new AbortController(),
+      // 主进程侧累积全文同样以旧正文为初值：onDelta 只追加增量
+      text: prepared.partialText,
+    };
+    running.set(requestId, session);
+
+    // 计划清单 seed：中断前模型已建的计划先挂到 session，避免续跑中被空清单覆盖
+    if (prepared.plan) {
+      session.plan = prepared.plan;
+    }
+    // 计划清单推送：update_plan 工具经此把整份快照推给渲染层，并记入 session 供收尾落盘
+    prepared.toolContext.emitPlan = (plan: PlanStep[]) => {
+      session.plan = plan;
+      emit(CHANNELS.CHAT_PLAN, {
+        requestId: session.requestId,
+        messageId: session.assistantMessageId,
+        plan,
+      } satisfies ChatPlanEvent);
+    };
+
+    // 以 checkpoint 的完整 convo 为上下文起跑；loop 内部会先补跑半截工具批次、
+    // 再追加 resumeNote，然后从 cp.turn + 1 轮继续
+    void runChatStream(session, cp.convo, providerId, prepared.toolContext, {
+      initialText: prepared.partialText,
+      startTurn: cp.turn + 1,
+      seedSteps: prepared.seedSteps,
+      resumeNote: RESUME_NOTE,
+    }).catch(() => {
+      // 兜底：编排逻辑自身异常时也要保证渲染层能退出 loading 态
+      emit(CHANNELS.CHAT_ERROR, {
+        requestId,
+        messageId: assistantMessageId,
+        code: 'UNKNOWN',
+        message: errorMessage('UNKNOWN'),
+      });
+    });
+    return { requestId };
   }
 
   async function handleConfigGet(_event: IpcMainInvokeEvent): Promise<PublicConfig> {
@@ -1114,6 +1400,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.CONVERSATION_SET_PINNED, handleConversationSetPinned);
     registerHandler(CHANNELS.CHAT_SEND, handleChatSend);
     registerHandler(CHANNELS.CHAT_ABORT, handleChatAbort);
+    registerHandler(CHANNELS.CHAT_RESUME, handleChatResume);
     registerHandler(CHANNELS.CONFIG_GET, handleConfigGet);
     registerHandler(CHANNELS.CONFIG_SAVE, handleConfigSave);
     registerHandler(CHANNELS.MODELS_LIST, handleModelsList);

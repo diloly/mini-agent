@@ -92,11 +92,11 @@ function MainLayout() {
     const unsubscribeChunk = onChatChunk(({ requestId, delta }) => {
       useAppStore.getState().appendDelta(requestId, delta);
     });
-    const unsubscribeEnd = onChatEnd(({ requestId, content, finishReason }) => {
-      useAppStore.getState().finishStream(requestId, content, finishReason);
+    const unsubscribeEnd = onChatEnd(({ requestId, content, finishReason, resumable }) => {
+      useAppStore.getState().finishStream(requestId, content, finishReason, resumable);
     });
-    const unsubscribeError = onChatError(({ requestId, code, message }) => {
-      useAppStore.getState().failStream(requestId, code, message);
+    const unsubscribeError = onChatError(({ requestId, code, message, resumable }) => {
+      useAppStore.getState().failStream(requestId, code, message, resumable);
     });
     const unsubscribeStep = onChatStep(({ requestId, step }) => {
       useAppStore.getState().upsertStep(requestId, step);

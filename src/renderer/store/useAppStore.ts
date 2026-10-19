@@ -49,6 +49,7 @@ import {
   signUp as apiSignUp,
   pickWorkspace as apiPickWorkspace,
   renameConversation as apiRenameConversation,
+  resumeChat,
   setConversationPinned as apiSetConversationPinned,
   setConversationWorkspace as apiSetConversationWorkspace,
   deleteSkill as apiDeleteSkill,
@@ -159,14 +160,16 @@ export interface AppState {
     replaceMessageId?: string,
     attachments?: MessageAttachment[],
   ) => Promise<void>;
+  /** 续跑：接着一条被中止的 assistant 消息从 checkpoint 继续跑（不建新消息，复用目标消息） */
+  resumeChat: (assistantMessageId: string) => Promise<void>;
   abortActive: () => Promise<void>;
   appendDelta: (requestId: string, delta: string) => void;
   /** 覆盖式写入某个工具步骤（step.id 相同则替换） */
   upsertStep: (requestId: string, step: ToolStep) => void;
   /** 覆盖式写入本轮计划清单（整份替换，不是增量） */
   upsertPlan: (requestId: string, plan: PlanStep[]) => void;
-  finishStream: (requestId: string, content: string, finishReason: FinishReason) => void;
-  failStream: (requestId: string, code: ErrorCode, message: string) => void;
+  finishStream: (requestId: string, content: string, finishReason: FinishReason, resumable?: boolean) => void;
+  failStream: (requestId: string, code: ErrorCode, message: string, resumable?: boolean) => void;
   remapOptimisticIds: (
     requestId: string,
     localUserMessageId: string,
@@ -399,7 +402,24 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 item.conversationId === id &&
                 item.assistantMessageId === message.id,
             );
-            return live ? { ...message, content: live.text } : message;
+            if (!live) {
+              return message;
+            }
+            // 进行中的消息：正文用流的累积文本，meta 同时清掉上一轮收尾写下的
+            // 结束态字段（finishReason/errorCode/errorText/resumable）——否则错误框、
+            // 「重试」「继续」按钮会挂在进行中的消息头上（磁盘 meta 是中断时的旧值）。
+            // 与 resumeChat 种子同款处理：meta 是这些 UI 的唯一数据源。
+            return {
+              ...message,
+              content: live.text,
+              meta: {
+                ...(message.meta ?? {}),
+                finishReason: undefined,
+                errorCode: undefined,
+                errorText: undefined,
+                resumable: undefined,
+              },
+            };
           });
           // 取「最后一条」仍未丢弃的本会话流作为恢复目标。
           // 注意：findLast 属于 ES2023，本项目 lib 锁在 ES2022，故用等价的 filter(...).at(-1)
@@ -608,6 +628,69 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /**
+   * 续跑：接着一条被中止的 assistant 消息从 checkpoint 继续跑。
+   * 不新建消息：复用目标 assistant 消息，正文在旧正文之后追加（chat:end 的整体覆盖语义
+   * 由主进程保证——推回来的 content 是「旧正文 + 新正文」的完整全文）。
+   */
+  resumeChat: async (assistantMessageId) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) return;
+    // 并发门与 sendMessage 同口径：按「当前会话是否有未丢弃的进行中流」判定
+    const hasActiveStream = Object.values(get().streams).some(
+      (stream) => stream.conversationId === conversationId && !stream.discarded,
+    );
+    if (hasActiveStream) return;
+    // 目标消息必须存在、是 assistant、且带 resumable 标记（主进程写）
+    const target = get().messages.find((item) => item.id === assistantMessageId);
+    if (!target || target.role !== 'assistant' || !target.meta?.resumable) return;
+
+    const requestId = createRequestId();
+    set((state) => ({
+      streams: {
+        ...state.streams,
+        [requestId]: {
+          requestId,
+          conversationId,
+          assistantMessageId,
+          // 种子取目标消息现值：正文衔接（新 delta 追加在后），steps/plan 延续旧值
+          text: target.content,
+          steps: target.meta?.steps ?? [],
+          plan: target.meta?.plan ?? [],
+          discarded: false,
+        },
+      },
+      activeRequestId: requestId,
+      loading: true,
+      error: null,
+      // 消息迁回「进行中」：清掉上一轮收尾写下的结束态字段（finishReason/errorCode/
+      // errorText/resumable）——它们是红色错误框、「重试」「继续」按钮的唯一数据源，
+      // 不清则这些元素会原样挂在新一轮头上（用户点「继续」后界面毫无变化）。
+      // steps/plan 不动：种子已取，upsertStep/onPlan 会继续在其上叠加。
+      messages: state.messages.map((message) =>
+        message.id === assistantMessageId
+          ? {
+              ...message,
+              meta: {
+                ...(message.meta ?? {}),
+                finishReason: undefined,
+                errorCode: undefined,
+                errorText: undefined,
+                resumable: undefined,
+              },
+            }
+          : message,
+      ),
+    }));
+
+    try {
+      await resumeChat({ requestId, conversationId, assistantMessageId });
+    } catch {
+      // 与 sendMessage 同口径：IPC 都没打通时用 NETWORK 码收尾，避免流卡住
+      get().failStream(requestId, 'NETWORK', '续跑失败，请重试');
+    }
+  },
+
   /** 停止当前生成 */
   abortActive: async () => {
     const requestId = get().activeRequestId;
@@ -702,7 +785,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   /** 正常 / 中止结束：写回全文与结束状态 */
-  finishStream: (requestId, content, finishReason) => {
+  finishStream: (requestId, content, finishReason, resumable) => {
     const stream = get().streams[requestId];
     set((state) => {
       const shouldUpdateMessages =
@@ -721,6 +804,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
                       steps: stream.steps,
                       // 仅当计划非空才写：避免用空数组盖掉已有值
                       ...(stream.plan.length > 0 ? { plan: stream.plan } : {}),
+                      // 主进程按 checkpoint 存在性判定的可续跑标记：undefined（旧调用方/本地收尾）不写，
+                      // 绝不覆盖消息上已有的 true/false
+                      ...(resumable !== undefined ? { resumable } : {}),
                     },
                   }
                 : message,
@@ -745,7 +831,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   /** 异常结束：在消息上标记错误码，供错误块展示与重试 */
-  failStream: (requestId, code, message) => {
+  failStream: (requestId, code, message, resumable) => {
     const stream = get().streams[requestId];
     set((state) => {
       const shouldUpdateMessages =
@@ -763,6 +849,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
                       errorCode: code,
                       errorText: message,
                       steps: stream?.steps ?? [],
+                      // 被动崩溃场景（checkpoint 仍在盘）也点亮「继续」：error 收尾与
+                      // aborted 收尾的可续跑语义相同，仅结束原因不同
+                      ...(resumable !== undefined ? { resumable } : {}),
                     },
                   }
                 : item,

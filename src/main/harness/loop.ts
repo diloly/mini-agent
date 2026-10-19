@@ -45,10 +45,15 @@ interface ToolCallStartInfo {
   name: string;
 }
 
-/** loop 向调用方的回调：文本增量 + 工具步骤快照 */
+/** loop 向调用方的回调：文本增量 + 工具步骤快照 + checkpoint 快照 */
 export interface HarnessCallbacks {
   onDelta: (delta: string) => void;
   onStep: (step: ToolStep) => void;
+  /**
+   * 「可续跑态」快照：每个工具结果回填后由 loop 调用（传入 convo 浅拷贝与当前轮号）。
+   * 实现方负责落盘；调用失败不得影响生成——实现侧需自行吞掉异常（主进程侧以 .catch 兜底）。
+   */
+  onCheckpoint?: (convo: LlmMessage[], turn: number) => void;
 }
 
 /** loop 的最终产物 */
@@ -165,12 +170,32 @@ export async function runAgentLoop(params: {
   signal: AbortSignal;
   callbacks: HarnessCallbacks;
   toolContext: ToolContext;
+  /** 续跑时中断前已生成的正文；loop 内部 text 以此为初值，result.text 含旧正文，onDelta 仍只推增量 */
+  initialText?: string;
+  /** 续跑从第几轮继续（中断时已消耗的轮数 +1）；缺省从第 1 轮开始 */
+  startTurn?: number;
+  /** 续跑说明；半截工具批次补全完成后追加到 convo 末尾（位置必须在 tool 消息之后） */
+  resumeNote?: string;
 }): Promise<HarnessResult> {
-  const { provider, providerConfig, messages, signal, callbacks, toolContext } = params;
+  const {
+    provider,
+    providerConfig,
+    messages,
+    signal,
+    callbacks,
+    toolContext,
+    // 续跑三参：解构漏掉会在 line 186 等处直接 ReferenceError（首跑就炸），
+    // 必须与签名里的声明一一对应
+    initialText,
+    startTurn,
+    resumeNote,
+  } = params;
   // 复制一份上下文，loop 内部会不断追加 assistant / tool 消息，不能污染入参
   const convo: LlmMessage[] = [...messages];
 
-  let text = '';
+  // 续跑时 text 以中断前已生成的正文为初值：渲染层已有旧正文，
+  // onDelta 只会推出增量，两者拼接后与 result.text 一致
+  let text = initialText ?? '';
   const steps: ToolStep[] = [];
   // 中间轮截断记录（轮号）。旧实现只保留「最后一轮」的 finishReason：模型第 N 轮
   // （N < 最后一轮）输出撞长度上限被截断时，这个事实整体丢弃 —— 用户看不到，
@@ -178,7 +203,61 @@ export async function runAgentLoop(params: {
   // 会当作无事发生继续说（MEMORY.md Harness 节记录的已知缺口，2026-10-16 补）。
   const truncatedTurns: number[] = [];
 
-  for (let turn = 1; turn <= MAX_TURNS; turn += 1) {
+  // 续跑起点处理（普通首跑时 startTurn 缺省为 1，这段同样执行、只是没有悬空批次）：
+  //
+  // ① 半截工具批次补全：中断（用户点停止 / 进程崩溃）可能发生在「模型一轮发出 N 个
+  //    tool_calls、只回填了前 K 个结果」的中间态。checkpoint 的 convo 就是那个形态，
+  //    直接发给模型会被 OpenAI 兼容接口拒绝——协议要求 assistant 声明的每个
+  //    tool_call 都必须有一条 tool 结果与之对应。故续跑时先把缺失的 K+1..N 补跑完，
+  //    让 convo 恢复「N = N」的完整形态再进 turn 循环。
+  // ② 补跑期间每个工具回填后立刻快照：补跑同样可能被中止 / 崩溃，增量落盘才有得可续。
+  // ③ 无论有没有悬空批次，都先落一版快照：保证 resume 起点（startTurn-1 轮）有据可查。
+  // ④ resumeNote 放在补全之后：assistant(tool_calls) 与 tool 消息在协议上必须相邻，
+  //    system 提示插在两者之间会破坏兼容服务端的位置假设（与截断回灌同一纪律）。
+  // 续跑起点是否已由补跑循环写过快照（true 时下面的兜底快照就是纯冗余 IO，跳过）
+  let snapshotWritten = false;
+  const lastMessage = convo.at(-1);
+  if (
+    lastMessage &&
+    lastMessage.role === 'assistant' &&
+    lastMessage.toolCalls &&
+    lastMessage.toolCalls.length > 0
+  ) {
+    // 从队尾向前收集紧邻的 tool 消息（即该 assistant 声明之后已回填的结果）
+    const trailingToolMessages: LlmMessage[] = [];
+    for (let i = convo.length - 1; i >= 0; i -= 1) {
+      const message = convo[i];
+      if (message.role !== 'tool') {
+        break;
+      }
+      trailingToolMessages.unshift(message);
+    }
+    // 悬空判定：已回填条数 < 声明条数。tool 消息按 toolCallId 与 call 对应
+    const filledIds = new Set(trailingToolMessages.map((message) => message.toolCallId ?? ''));
+    const missingCalls = lastMessage.toolCalls.filter((call) => !filledIds.has(call.id));
+    for (const call of missingCalls) {
+      // 与 turn 循环同一纪律：每补一个工具前检查中止，已停止就立即抛，不再补下一个
+      if (signal.aborted) {
+        throw createAbortError();
+      }
+      // text 此刻 = initialText（续跑时即中断前已生成的正文），补跑工具的正文分界点用它
+      await executeToolCall(call, convo, steps, callbacks, signal, toolContext, text.length);
+      callbacks.onCheckpoint?.([...convo], (startTurn ?? 1) - 1);
+      snapshotWritten = true;
+    }
+  }
+  // 仅续跑路径落兜底快照（③）：补跑循环已写过同 turn 快照时跳过，避免每次续跑
+  // 多一次全量 convo 序列化写盘。首跑（startTurn 缺省）同样不写——此时一个工具都
+  // 没跑过，turn=0 的快照过不了 validateCheckpoint 的 turn>=1 校验，写了也是废文件，
+  // 还会让正常首跑的每条 abort 都留下一个永远续不动的 checkpoint
+  if (!snapshotWritten && startTurn !== undefined) {
+    callbacks.onCheckpoint?.([...convo], startTurn - 1);
+  }
+  if (resumeNote) {
+    convo.push({ role: 'system', content: resumeNote });
+  }
+
+  for (let turn = startTurn ?? 1; turn <= MAX_TURNS; turn += 1) {
     // 每轮开头先检查中止：用户点停止后尽快退出，避免再发一次请求烧 token
     if (signal.aborted) {
       throw createAbortError();
@@ -237,7 +316,17 @@ export async function runAgentLoop(params: {
     // text.length 即「此刻正文已累积的长度」，作为这批工具的正文分界点：
     // 同轮多个工具共用同一个值，渲染层据此把它们归为一组插在同一段正文之后。
     for (const call of toolCalls) {
+      // 批次内中止检查：用户点停止后，当前工具执行完即停，不再跑本批次剩余的工具 ——
+      // 剩余工具连同已回填的部分构成「半截批次」留在 convo 里，checkpoint 已落盘，
+      // 用户点「继续」时由文件开头的续跑起点处理块补跑（旧的实现在这里不检查，
+      // 停止后会把整批剩余工具跑完，既违背停止意图又让半截批次只在崩溃场景出现）。
+      if (signal.aborted) {
+        throw createAbortError();
+      }
       await executeToolCall(call, convo, steps, callbacks, signal, toolContext, text.length);
+      // 每个工具结果回填后立刻快照：被动崩溃（进程被杀）时磁盘上仍有最近一次
+      // 完整 convo，用户点「继续」才能接着中断前的上下文跑——这是「增量写」的核心
+      callbacks.onCheckpoint?.([...convo], turn);
     }
 
     // 截断回灌：这一轮输出被长度上限切断 ⇒ 显式告诉模型，不让它当作无事发生

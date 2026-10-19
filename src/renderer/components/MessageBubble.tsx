@@ -31,12 +31,40 @@ const STEP_ICON: Record<ToolStepStatus, string> = {
   error: '✕',
 };
 
-/** 计划步骤状态对应的纯文字图标（与 STEP_ICON 同款写法） */
-const PLAN_ICON: Record<PlanStepStatus, string> = {
-  pending: '☐',
-  in_progress: '◐',
-  done: '☑',
-};
+/**
+ * 计划步骤状态图标：手绘 SVG，替代 ☐ / ◐ / ☑ 字符。
+ *
+ * 字符图标的字形、基线、左右宽度随字体漂移，三种状态混排时一眼就能看出参差
+ * （空心方框比半圆宽、勾选框基线偏下），是计划块「丑」的主因。SVG 走统一
+ * 24 视图盒 + 1.75 描边，与操作按钮同一套视觉语言，尺寸与基线都不受字体影响。
+ *
+ * - pending：空心圆（待办）
+ * - in_progress：半圆弧自转（进行中；旋转本身也是「还在跑」的动画信号）
+ * - done：圆 + 勾（已完成）
+ */
+function PlanIcon({ status }: { status: PlanStepStatus }): ReactNode {
+  if (status === 'in_progress') {
+    return (
+      <ActionIcon className="mt-[2px] shrink-0 animate-spin">
+        <circle cx="12" cy="12" r="8.5" opacity={0.25} />
+        <path d="M20.5 12a8.5 8.5 0 0 0-8.5-8.5" />
+      </ActionIcon>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <ActionIcon className="mt-[2px] shrink-0">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M8.2 12.4l2.6 2.6 5-5.2" />
+      </ActionIcon>
+    );
+  }
+  return (
+    <ActionIcon className="mt-[2px] shrink-0">
+      <circle cx="12" cy="12" r="8.5" />
+    </ActionIcon>
+  );
+}
 
 /** 复制结果反馈的展示时长（毫秒） */
 const COPY_FEEDBACK_MS = 1500;
@@ -60,7 +88,13 @@ const ACTION_ROW_VISIBILITY =
  * 操作按钮图标：统一 24 视图盒、1.75 描边、颜色随 currentColor。
  * 手绘 SVG 而不引图标库 —— 只需要 3 个形状，装一个依赖不划算。
  */
-function ActionIcon({ children }: { children: ReactNode }): ReactNode {
+function ActionIcon({
+  children,
+  className = '',
+}: {
+  children: ReactNode;
+  className?: string;
+}): ReactNode {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -69,7 +103,7 @@ function ActionIcon({ children }: { children: ReactNode }): ReactNode {
       strokeWidth={1.75}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="h-3.5 w-3.5"
+      className={`h-3.5 w-3.5 ${className}`}
       aria-hidden="true"
     >
       {children}
@@ -109,6 +143,8 @@ export interface MessageBubbleProps {
    * （生成中由调用方传 undefined 来禁止编辑，避免与进行中的流冲突）。
    */
   onEdit?: (messageId: string, content: string) => void;
+  /** 续跑入口；未提供或消息不可续跑时不渲染「继续」按钮 */
+  onResume?: () => void;
 }
 
 /**
@@ -145,7 +181,7 @@ async function writeClipboard(text: string): Promise<boolean> {
 }
 
 export default function MessageBubble(props: MessageBubbleProps) {
-  const { message, streaming, onRetry, onOpenSettings, onEdit } = props;
+  const { message, streaming, onRetry, onOpenSettings, onEdit, onResume } = props;
   const isUser = message.role === 'user';
   const content = message.content;
   const errorCode = message.meta?.errorCode;
@@ -293,7 +329,7 @@ export default function MessageBubble(props: MessageBubbleProps) {
                     key={index}
                     className={`flex min-w-0 items-start gap-1.5 text-[12px] ${step.status === 'in_progress' ? 'text-fg' : 'text-muted'}`}
                   >
-                    <span className="shrink-0">{PLAN_ICON[step.status]}</span>
+                    <PlanIcon status={step.status} />
                     <span className="min-w-0 break-words">{step.title}</span>
                   </div>
                 ))}
@@ -358,7 +394,7 @@ export default function MessageBubble(props: MessageBubbleProps) {
               ) : null}
             </div>
           )
-        ) : timeline.length > 0 ? (
+        ) : timeline.length > 0 || streaming ? (
           /* 助手消息：正文与工具调用按时间线交错 —— 工具出现在它实际发生的正文位置之后。
              工具不再单独折叠，只有上方「计划」块保留吸顶与折叠。
              分段渲染 Markdown：工具调用边界本身就是段落边界，逐段解析不会丢失结构。 */
@@ -399,15 +435,34 @@ export default function MessageBubble(props: MessageBubbleProps) {
                 </div>
               ),
             )}
+            {/* 运行状态行（输出尾）：末尾不是正文时补一行浅色「思考中…」——
+                时间线为空 = 首轮请求还没吐第一个字；末尾是工具行 = 工具跑完了、
+                正在等下一轮模型响应。没有这一行，长等待期间界面完全静止，用户
+                看不出还在跑（尤其在等限流冷却时）。末尾是正文时由流式光标表示
+                进度，不重复加文字。 */}
+            {streaming && timeline.at(-1)?.kind !== 'text' ? (
+              <p className="animate-pulse text-[12px] text-muted">
+                {(steps ?? []).some((step) => step.status === 'running')
+                  ? '执行工具中…'
+                  : '思考中…'}
+              </p>
+            ) : null}
           </div>
-        ) : streaming ? (
-          <p className="text-[13px] text-muted">思考中…</p>
         ) : (
           <p className="text-[13px] text-muted">（本轮没有返回内容）</p>
         )}
 
-        {aborted && content.length > 0 ? (
-          <p className="mt-1 text-[12px] text-muted">已停止生成</p>
+        {/* 「继续」按钮：完全由主进程判定的 resumable 驱动——aborted 与 error 两种
+            收尾共用（error 分支的 resumable 同样按 checkpoint 存在性判定，被动崩溃
+            重启后也能续）。不再看 content 长度：模型首轮直接调工具（无寒暄正文）就
+            被停止的场景，正文为空但断点已落盘，同样可续。 */}
+        {message.meta?.resumable && onResume ? (
+          <div className="mt-1 flex items-center gap-2">
+            {aborted ? <p className="text-[12px] text-muted">已停止生成</p> : null}
+            <Button size="sm" variant="secondary" onPress={() => onResume()}>
+              继续
+            </Button>
+          </div>
         ) : null}
 
         {!isUser && showActions ? (

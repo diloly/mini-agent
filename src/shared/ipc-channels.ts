@@ -26,6 +26,8 @@ export const CHANNELS = {
   CONVERSATION_SET_PINNED: 'conversation:setPinned',
   CHAT_SEND: 'chat:send',
   CHAT_ABORT: 'chat:abort',
+  /** 续跑：接着一条被中止的 assistant 消息，用中断前落盘的 checkpoint 继续生成 */
+  CHAT_RESUME: 'chat:resume',
   CHAT_CHUNK: 'chat:chunk',
   CHAT_END: 'chat:end',
   CHAT_ERROR: 'chat:error',
@@ -157,6 +159,8 @@ export interface ChatEndEvent {
   messageId: string;
   content: string;
   finishReason: FinishReason;
+  /** 本轮是否留有可续跑的 checkpoint（主进程 finalize 时按文件存在性判定） */
+  resumable?: boolean;
 }
 
 /** 异常结束 */
@@ -165,6 +169,8 @@ export interface ChatErrorEvent {
   messageId: string;
   code: ErrorCode;
   message: string;
+  /** 本轮是否留有可续跑的 checkpoint（被动崩溃场景重启后也可续） */
+  resumable?: boolean;
 }
 
 /** 工具步骤更新：全量快照（非增量），渲染层直接按 step.id 覆盖即可 */
@@ -198,6 +204,19 @@ export interface ListModelsDraft {
   baseUrl?: string;
   /** 与保存同一口径：非空 = 用新值拉取；留空 = 沿用已存密钥（历史密钥对渲染层不可见，只能由主进程补齐） */
   apiKey?: string;
+}
+
+/** 续跑请求：接着一条被中止的 assistant 消息继续跑 */
+export interface ChatResumeRequest {
+  requestId: string;
+  conversationId: string;
+  /** 被中止的 assistant 消息 id（checkpoint 以其命名） */
+  assistantMessageId: string;
+}
+
+/** 续跑请求的响应：回显 requestId，流式事件随后按此 requestId 推送 */
+export interface ChatResumeResponse {
+  requestId: string;
 }
 
 /**

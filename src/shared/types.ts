@@ -141,6 +141,8 @@ export interface MessageMeta {
   plan?: PlanStep[];
   /** 本轮 agent loop 实际消耗的轮数 */
   turns?: number;
+  /** 有 checkpoint 可续跑：被中止且尚未续跑完成/清理的消息为 true，界面据此显示「继续」 */
+  resumable?: boolean;
 }
 
 /** 单条消息；流式期间 content 为「已累积的完整文本」 */
