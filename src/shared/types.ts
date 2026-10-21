@@ -183,6 +183,11 @@ export interface DeepSeekProviderSettings {
   baseUrl: string;
   model: string;
   apiKeyEnc?: string;
+  /**
+   * 上下文窗口（token 数），仅用于「上下文用量」统计的分母；不参与请求体。
+   * 缺省时读取侧回退 DEFAULT_CONTEXT_WINDOW，不写盘补默认值（旧配置无需迁移）。
+   */
+  contextWindow?: number;
 }
 
 /** Ollama 配置：本地服务无需密钥 */
@@ -201,6 +206,8 @@ export interface CustomProviderSettings {
   baseUrl: string;
   model: string;
   apiKeyEnc?: string;
+  /** 上下文窗口（token 数），仅用于「上下文用量」统计的分母；缺省回退 DEFAULT_CONTEXT_WINDOW */
+  contextWindow?: number;
 }
 
 /** 应用配置（与会话数据物理分离，清历史不丢 Key） */
@@ -228,6 +235,12 @@ export interface AppConfig {
 export interface ModelInfo {
   id: string;
   label: string;
+  /**
+   * 服务端声明的上下文窗口（token），仅当 /models 响应里带了才填。
+   * 标准 OpenAI 兼容接口不返回该字段（DeepSeek 官方也没有）；OpenRouter（context_length）、
+   * vLLM（max_model_len）等网关会带 —— 有则用于自动填充设置里的「上下文窗口」，没有就不猜。
+   */
+  contextWindow?: number;
 }
 
 /**
@@ -237,9 +250,9 @@ export interface ModelInfo {
 export interface PublicConfig {
   activeProviderId: ProviderId;
   providers: {
-    deepseek: { baseUrl: string; model: string; hasApiKey: boolean };
+    deepseek: { baseUrl: string; model: string; hasApiKey: boolean; contextWindow?: number };
     ollama: { baseUrl: string; model: string; numCtx?: number };
-    custom: { baseUrl: string; model: string; hasApiKey: boolean };
+    custom: { baseUrl: string; model: string; hasApiKey: boolean; contextWindow?: number };
   };
   models: Record<ProviderId, ModelInfo[]>;
   safeStorageAvailable: boolean;
@@ -309,6 +322,27 @@ export function isValidNumCtx(value: unknown): value is number {
     Number.isInteger(value) &&
     value >= NUM_CTX_MIN &&
     value <= NUM_CTX_MAX
+  );
+}
+
+/**
+ * 云端 / 自定义 provider 的默认上下文窗口（token）。
+ * 只用于「上下文用量」统计的分母——统计不参与请求，估错不影响模型调用；
+ * 用户可在设置里按实际模型改（如 128K / 300K），改完统计即刻按新窗口计算。
+ */
+export const DEFAULT_CONTEXT_WINDOW = 128000;
+
+/** 上下文窗口的合法区间（token）：下限覆盖小模型，上限覆盖 1M 级长上下文 */
+export const CONTEXT_WINDOW_MIN = 2048;
+export const CONTEXT_WINDOW_MAX = 1048576;
+
+/** 校验任意值是否为合法的上下文窗口（仅 deepseek / custom 使用；ollama 走 numCtx） */
+export function isValidContextWindow(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= CONTEXT_WINDOW_MIN &&
+    value <= CONTEXT_WINDOW_MAX
   );
 }
 

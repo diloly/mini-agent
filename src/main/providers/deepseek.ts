@@ -11,6 +11,7 @@ import {
   ProviderError,
   joinApiPath,
   newProviderError,
+  pickContextWindow,
   providerErrorFromStatus,
   readResponseText,
   toProviderError,
@@ -125,7 +126,12 @@ export const deepseekProvider: LLMProvider = {
       const payload = (await response.json()) as ModelListResponse;
       const models = (payload.data ?? [])
         .filter((item): item is { id: string } => typeof item?.id === 'string' && item.id.length > 0)
-        .map<ModelInfo>((item) => ({ id: item.id, label: item.id }));
+        .map<ModelInfo>((item) => {
+          // DeepSeek 官方不返回窗口；网关（如 OpenRouter 风格）若带了就带出来，
+          // 设置页会据此自动填「上下文窗口」，没带就回退默认值
+          const contextWindow = pickContextWindow(item);
+          return { id: item.id, label: item.id, ...(contextWindow ? { contextWindow } : {}) };
+        });
       return models.length > 0 ? models : FALLBACK_MODELS;
     } catch {
       return FALLBACK_MODELS;

@@ -10,6 +10,7 @@ import type {
   AuthState,
   ChatSendResponse,
   ConfigSaveInput,
+  ContextStatsResponse,
   ConversationSummary,
   ListModelsDraft,
   SkillDeleteResult,
@@ -39,6 +40,7 @@ import {
   deleteConversation as apiDeleteConversation,
   getAuthState as apiGetAuthState,
   getConfig,
+  getContextStats,
   listConversations,
   getConversation,
   listModels,
@@ -134,9 +136,16 @@ export interface AppState {
   authChecked: boolean;
   /** 已安装技能（技能页用）；进入技能页时才拉取 */
   skills: SkillSummary[];
+  /** 当前会话的上下文用量（主进程按真实装配口径估算）；null 表示尚未取到 */
+  contextStats: ContextStatsResponse | null;
 
   hydrate: () => Promise<void>;
   refreshConversations: () => Promise<void>;
+  /**
+   * 刷新当前会话的上下文用量。
+   * 会话切换、一轮生成结束、消息定稿时调用；生成中的增量不逐字刷新（浪费 IPC）。
+   */
+  refreshContextStats: () => Promise<void>;
   selectConversation: (id: string | null) => Promise<void>;
   /**
    * 新建会话并选中。
@@ -177,8 +186,8 @@ export interface AppState {
     localAssistantMessageId: string,
     remoteAssistantMessageId: string,
   ) => void;
-  /** 拉取某个 Provider 的候选模型；draft 为表单未保存现值（仅本次拉取生效，不落盘） */
-  refreshModels: (providerId: ProviderId, draft?: ListModelsDraft) => Promise<void>;
+  /** 拉取候选模型并写进 config.models；返回值供调用方取模型自带的窗口信息（失败回空数组） */
+  refreshModels: (providerId: ProviderId, draft?: ListModelsDraft) => Promise<ModelInfo[]>;
   saveAppConfig: (input: ConfigSaveInput) => Promise<void>;
   /** 在输入区快速切换模型服务 / 模型，不打开设置弹层 */
   switchModel: (providerId: ProviderId, model: string) => Promise<void>;
@@ -325,6 +334,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   auth: null,
   authChecked: false,
   skills: [],
+  contextStats: null,
 
   /** 启动时水合：拉配置 + 会话列表，并选中最近更新的会话 */
   hydrate: async () => {
@@ -360,6 +370,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /**
+   * 刷新当前会话的上下文用量。
+   * 主进程按真实装配口径（system + 最近 N 条）估算，渲染层只负责展示。
+   * 结果回显 conversationId：切走后才回来的过期结果直接丢弃，避免把 A 会话的
+   * 数字贴到 B 会话的输入框上。失败静默 —— 统计是辅助信息，不能打断主流程。
+   */
+  refreshContextStats: async () => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) {
+      set({ contextStats: null });
+      return;
+    }
+    try {
+      const stats = await getContextStats(conversationId);
+      if (get().activeConversationId === stats.conversationId) {
+        set({ contextStats: stats });
+      }
+    } catch {
+      // 统计失败：保留上一次的数字（总比闪成 0 好），不弹错误
+    }
+  },
+
   /** 切换会话：重绑定进行中的流，再拉取该会话的全量消息 */
   selectConversation: async (id) => {
     if (!id) {
@@ -373,6 +405,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         activeWorkspaceRoot: null,
         // 离开会话时一并清掉全局错误横幅，避免错误提示残留在空态页上
         error: null,
+        // 上下文用量是会话级信息：没有会话就没有可展示的数字
+        contextStats: null,
       }));
       return;
     }
@@ -436,6 +470,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
             loading: resumed ? true : state.loading,
           };
         });
+        // 会话切好、消息就位后刷新上下文用量（异步，不阻塞界面渲染）
+        void get().refreshContextStats();
       }
     } catch {
       set({ error: '读取会话失败，请重试' });
@@ -827,6 +863,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       void get().selectConversation(stream.conversationId);
     } else if (stream) {
       void get().refreshConversations();
+      // 一轮结束、正文定稿：上下文用量在此刻刷新一次（生成中不逐字刷新）
+      void get().refreshContextStats();
     }
   },
 
@@ -871,6 +909,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       void get().selectConversation(stream.conversationId);
     } else if (stream) {
       void get().refreshConversations();
+      // 异常收尾同样是「消息定稿」：刷新一次上下文用量
+      void get().refreshContextStats();
     }
   },
 
@@ -921,8 +961,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
             }
           : state,
       );
+      // 回传列表：调用方（设置页）据此取模型自带的 contextWindow 自动填表
+      return models;
     } catch {
       // 模型列表失败不影响主流程，UI 允许手填
+      return [];
     }
   },
 

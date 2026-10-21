@@ -35,6 +35,8 @@ export const CHANNELS = {
   CHAT_STEP: 'chat:step',
   /** 计划清单更新（全量快照，渲染层整份覆盖上一版） */
   CHAT_PLAN: 'chat:plan',
+  /** 上下文用量统计：按真实装配口径（system + 最近 N 条消息）估算 token */
+  CONTEXT_STATS: 'context:stats',
   CONFIG_GET: 'config:get',
   CONFIG_SAVE: 'config:save',
   MODELS_LIST: 'models:list',
@@ -219,6 +221,29 @@ export interface ChatResumeResponse {
   requestId: string;
 }
 
+/** 上下文用量统计请求 */
+export interface ContextStatsRequest {
+  conversationId: string;
+}
+
+/**
+ * 上下文用量统计结果。
+ * 口径与真实请求一致：system（工作区规则 + 技能清单 + 记忆）+ 最近
+ * CONTEXT_MESSAGE_LIMIT 条消息，按 estimateTokens 粗估。
+ */
+export interface ContextStatsResponse {
+  /** 回显会话 id：渲染层据此丢弃「切走后才回来的」过期结果 */
+  conversationId: string;
+  /** 已用 token（估算值） */
+  tokens: number;
+  /** 上下文窗口（token），即百分比的分母 */
+  window: number;
+  /** 参与统计的消息条数（含 system，用于诊断） */
+  messageCount: number;
+  /** 历史消息条数上限（CONTEXT_MESSAGE_LIMIT） */
+  limit: number;
+}
+
 /**
  * 保存配置的入参：字段均为可选，apiKey 只进不出（保存后仅回传 hasApiKey）。
  */
@@ -229,6 +254,8 @@ export interface ConfigSaveInput {
     model?: string;
     /** 明文密钥，仅用于写入；空字符串表示清除 */
     apiKey?: string;
+    /** 上下文窗口（token），仅用于用量统计的分母；null = 清除配置（回退默认），不传 = 不改动 */
+    contextWindow?: number | null;
   };
   ollama?: {
     baseUrl?: string;
@@ -241,6 +268,8 @@ export interface ConfigSaveInput {
     model?: string;
     /** 明文密钥，仅用于写入；空字符串表示清除 */
     apiKey?: string;
+    /** 上下文窗口（token），仅用于用量统计的分母；null = 清除配置（回退默认），不传 = 不改动 */
+    contextWindow?: number | null;
   };
   /** 记忆功能总开关；不传表示不改动 */
   memoryEnabled?: boolean;

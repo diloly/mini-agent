@@ -20,6 +20,8 @@ import type {
   ClearLocalDataRequest,
   ClearLocalDataResult,
   ConfigSaveInput,
+  ContextStatsRequest,
+  ContextStatsResponse,
   Conversation,
   ConversationSummary,
   ListModelsDraft,
@@ -78,6 +80,8 @@ export interface MiniAgentApi {
   listModels(providerId: ProviderId, draft?: ListModelsDraft): Promise<ModelInfo[]>;
   /** 续跑：接着一条被中止的 assistant 消息从 checkpoint 继续跑 */
   resumeChat(request: ChatResumeRequest): Promise<ChatResumeResponse>;
+  /** 上下文用量统计：按真实装配口径估算已用 token 与窗口大小 */
+  getContextStats(request: ContextStatsRequest): Promise<ContextStatsResponse>;
   /** 订阅「打开设置」引导事件 */
   onOpenSettings(listener: () => void): () => void;
   /** 弹系统目录选择框：用户选中后返回绝对路径，取消时 canceled 为 true */

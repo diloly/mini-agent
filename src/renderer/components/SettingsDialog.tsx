@@ -19,7 +19,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigSaveInput, ListModelsDraft } from '../../shared/ipc-channels';
 import {
   AUTH_ERROR_TEXT,
+  CONTEXT_WINDOW_MAX,
+  CONTEXT_WINDOW_MIN,
   DEFAULT_BASE_URL,
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_NUM_CTX,
   NUM_CTX_MAX,
   NUM_CTX_MIN,
@@ -27,6 +30,7 @@ import {
   PROVIDER_LABELS,
   THEME_MODE_LABELS,
   THEME_MODE_ORDER,
+  type ModelInfo,
   type ProviderId,
   type ThemeMode,
 } from '../../shared/types';
@@ -39,6 +43,17 @@ const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
   { id: 'ollama', label: PROVIDER_LABELS.ollama },
   { id: 'custom', label: PROVIDER_LABELS.custom },
 ];
+
+/** 窗口大小的紧凑展示：128000 → "128K"、1048576 → "1M"（候选模型 chip 用） */
+function formatWindowTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '';
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
+  }
+  return `${Math.round(value / 1000)}K`;
+}
 
 /** 设置分组 id */
 type SettingsSectionId = 'model' | 'appearance' | 'memory' | 'account';
@@ -78,6 +93,10 @@ export default function SettingsDialog() {
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
+  // 上下文窗口（token）：仅用于「上下文用量」百分比的分母，不参与请求体。
+  // 空串 = 使用默认（DEFAULT_CONTEXT_WINDOW），保存时下发 null 表示清除已存配置。
+  const [deepseekContextWindow, setDeepseekContextWindow] = useState('');
+  const [customContextWindow, setCustomContextWindow] = useState('');
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   // 当前所在分组：用户上次停在哪个就保持哪个，弹层重开不强制回「模型」
@@ -124,6 +143,17 @@ export default function SettingsDialog() {
     setCustomBaseUrl(config.providers.custom.baseUrl);
     setCustomModel(config.providers.custom.model);
     setCustomApiKey('');
+    // 上下文窗口：未配置时留空（界面显示默认值提示），已配置则回填
+    setDeepseekContextWindow(
+      typeof config.providers.deepseek.contextWindow === 'number'
+        ? String(config.providers.deepseek.contextWindow)
+        : '',
+    );
+    setCustomContextWindow(
+      typeof config.providers.custom.contextWindow === 'number'
+        ? String(config.providers.custom.contextWindow)
+        : '',
+    );
     setApiKey('');
     setLocalError(null);
   }, [open]);
@@ -133,15 +163,40 @@ export default function SettingsDialog() {
    * 用输入框里的现值拉取（不落盘）：用户改完 Base URL 不保存也能直接验证新地址；
    * 拉不到就回空列表提示手填，任何东西都不会被写进配置 —— 输错的地址不会被保存。
    * apiKey 与保存同一口径：留空表示沿用已存密钥（历史密钥对界面不可见，由主进程补齐）。
+   *
+   * 服务端若在 /models 响应里带了窗口信息（OpenRouter 的 context_length、vLLM 的
+   * max_model_len 等），顺手填进「上下文窗口」输入框——只改表单值，仍需点保存才落盘。
    */
-  function handleFetchModels(): void {
+  async function handleFetchModels(): Promise<void> {
     const draft: ListModelsDraft =
       providerId === 'deepseek'
         ? { baseUrl: deepseekBaseUrl, apiKey }
         : providerId === 'ollama'
           ? { baseUrl: ollamaBaseUrl }
           : { baseUrl: customBaseUrl, apiKey: customApiKey };
-    void refreshModels(providerId, draft);
+    const fetched = await refreshModels(providerId, draft);
+    const currentModel =
+      providerId === 'deepseek' ? deepseekModel : providerId === 'ollama' ? ollamaModel : customModel;
+    const matched = fetched.find((item) => item.id === currentModel);
+    if (matched) {
+      applyContextWindowSuggestion(matched);
+    }
+  }
+
+  /**
+   * 把模型自带的窗口信息填进表单：只在输入框为空时填（绝不覆盖用户手填的值），
+   * 且只对 deepseek / custom 生效 —— ollama 的窗口由 numCtx 单独管。
+   */
+  function applyContextWindowSuggestion(model: ModelInfo): void {
+    if (typeof model.contextWindow !== 'number') {
+      return;
+    }
+    const suggestion = String(model.contextWindow);
+    if (providerId === 'deepseek') {
+      setDeepseekContextWindow((prev) => (prev.trim().length > 0 ? prev : suggestion));
+    } else if (providerId === 'custom') {
+      setCustomContextWindow((prev) => (prev.trim().length > 0 ? prev : suggestion));
+    }
   }
 
   /** 关闭弹层（等价点击遮罩 / 取消） */
@@ -167,17 +222,44 @@ export default function SettingsDialog() {
     } else {
       resolvedNumCtx = Number(ollamaNumCtxSelect);
     }
+    // 上下文窗口（仅用量统计的分母）：留空 = 清除（回退默认），非空必须是合法整数。
+    // 校验不通过就不发起保存 —— 与 numCtx 同一纪律，畸形值不落盘。
+    const parseContextWindow = (raw: string): number | null | 'invalid' => {
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) {
+        return null;
+      }
+      const parsed = Number(trimmed);
+      if (
+        !Number.isInteger(parsed) ||
+        parsed < CONTEXT_WINDOW_MIN ||
+        parsed > CONTEXT_WINDOW_MAX
+      ) {
+        return 'invalid';
+      }
+      return parsed;
+    };
+    const deepseekWindow = parseContextWindow(deepseekContextWindow);
+    const customWindow = parseContextWindow(customContextWindow);
+    if (deepseekWindow === 'invalid' || customWindow === 'invalid') {
+      setLocalError(
+        `上下文窗口需为 ${CONTEXT_WINDOW_MIN} 到 ${CONTEXT_WINDOW_MAX} 之间的整数（token）；留空表示使用默认 ${DEFAULT_CONTEXT_WINDOW}`,
+      );
+      setSaving(false);
+      return;
+    }
     const payload: ConfigSaveInput = {
       activeProviderId: providerId,
-      deepseek: { baseUrl: deepseekBaseUrl, model: deepseekModel },
+      deepseek: { baseUrl: deepseekBaseUrl, model: deepseekModel, contextWindow: deepseekWindow },
       ollama: { baseUrl: ollamaBaseUrl, model: ollamaModel, numCtx: resolvedNumCtx },
-      custom: { baseUrl: customBaseUrl, model: customModel },
+      custom: { baseUrl: customBaseUrl, model: customModel, contextWindow: customWindow },
     };
     if (apiKey.trim().length > 0) {
       payload.deepseek = {
         baseUrl: deepseekBaseUrl,
         model: deepseekModel,
         apiKey: apiKey.trim(),
+        contextWindow: deepseekWindow,
       };
     }
     // 自定义服务的密钥同样是「只进不出」：留空不下发，避免误清已存密钥
@@ -186,12 +268,15 @@ export default function SettingsDialog() {
         baseUrl: customBaseUrl,
         model: customModel,
         apiKey: customApiKey.trim(),
+        contextWindow: customWindow,
       };
     }
     try {
       const next = await saveConfig(payload);
       useAppStore.setState({ config: next });
       await refreshModels(next.activeProviderId);
+      // 上下文窗口可能刚被改过：立即按新分母重算一次用量，输入框旁的环不用等下一轮
+      void useAppStore.getState().refreshContextStats();
       setApiKey('');
       setCustomApiKey('');
       setSettingsOpen(false);
@@ -396,6 +481,22 @@ export default function SettingsDialog() {
                               placeholder="sk-..."
                             />
                           </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>
+                              上下文窗口（token，仅用于用量统计）
+                            </Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              type="number"
+                              value={deepseekContextWindow}
+                              onChange={(event) => setDeepseekContextWindow(event.target.value)}
+                              placeholder={`留空使用默认 ${DEFAULT_CONTEXT_WINDOW}`}
+                            />
+                            <p className="mt-1 text-[11px] text-muted">
+                              只用于计算输入框旁「上下文已使用」的百分比，不影响请求；请按模型实际窗口填写。
+                            </p>
+                          </div>
                         </>
                       ) : null}
 
@@ -510,6 +611,22 @@ export default function SettingsDialog() {
                               placeholder="gpt-4o-mini"
                             />
                           </div>
+                          <div>
+                            <Label className={SECTION_LABEL_CLASS}>
+                              上下文窗口（token，仅用于用量统计）
+                            </Label>
+                            <Input
+                              variant="secondary"
+                              fullWidth
+                              type="number"
+                              value={customContextWindow}
+                              onChange={(event) => setCustomContextWindow(event.target.value)}
+                              placeholder={`留空使用默认 ${DEFAULT_CONTEXT_WINDOW}`}
+                            />
+                            <p className="mt-1 text-[11px] text-muted">
+                              只用于计算输入框旁「上下文已使用」的百分比，不影响请求；请按模型实际窗口填写。
+                            </p>
+                          </div>
                           <p className="text-[12px] text-muted">
                             OpenAI 兼容接口：向 Base URL 追加 /chat/completions 与 /models 发起请求；API Key
                             可留空（本地服务通常不需要）。
@@ -523,7 +640,7 @@ export default function SettingsDialog() {
                           <Label className="text-[12px] text-muted">
                             候选模型（{models.length}）
                           </Label>
-                          <Button size="sm" variant="ghost" onPress={handleFetchModels}>
+                          <Button size="sm" variant="ghost" onPress={() => void handleFetchModels()}>
                             拉取列表
                           </Button>
                         </div>
@@ -543,9 +660,18 @@ export default function SettingsDialog() {
                                     ? 'bg-surface-selected text-fg'
                                     : 'bg-surface text-muted hover:text-fg',
                                 ].join(' ')}
-                                onClick={() => setModelValue(item.id)}
+                                onClick={() => {
+                                  setModelValue(item.id);
+                                  // 选中模型时把服务端声明的窗口顺手填进表单（留空才填）
+                                  applyContextWindowSuggestion(item);
+                                }}
                               >
                                 {item.label}
+                                {item.contextWindow ? (
+                                  <span className="ml-1 text-[11px] text-muted">
+                                    {formatWindowTokens(item.contextWindow)}
+                                  </span>
+                                ) : null}
                               </button>
                             ))}
                           </div>

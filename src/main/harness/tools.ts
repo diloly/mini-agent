@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import type { ToolDefinition } from '../providers/types';
 import { appendDailyNoteToFile, dailyNoteFilePath, formatLocalTime } from '../workspace-memory';
 import type { HarnessTool, ToolContext, ToolResult } from './types';
-import type { PlanStep, PlanStepStatus } from '../../shared/types';
+import type { HarnessPlanStep } from './events';
 import { createSearchTools } from './tools-search';
 import { createSkillRunTools } from './tools-skill-run';
 import { createSkillReadTools } from './tools-skill-read';
@@ -563,8 +563,10 @@ const appendDailyNote: HarnessTool = {
 
 /**
  * 计划清单工具：模型用它维护「本轮打算做什么」的清单，给用户一个可视的进度。
- * 每次调用都是整份覆盖（非增量）——模型把当前完整清单整体传回，工具原样交给
- * emitPlan 推给渲染层并存进 meta.plan。这一步不落盘、不读盘，纯展示用途。
+ * 每次调用都是整份覆盖（非增量）——模型把当前完整清单整体传回，工具只负责校验并
+ * 通过 ToolResult.plan 把数据交回 loop，由 loop 转成 plan-updated 事件外发。
+ * 工具不直接触碰任何推送通道：谁听这个事件、把它变成什么（CHAT_PLAN / 界面 /
+ * 落盘 meta.plan），由 loop 的消费方决定。
  */
 const updatePlan: HarnessTool = {
   define(): ToolDefinition {
@@ -600,13 +602,9 @@ const updatePlan: HarnessTool = {
       },
     };
   },
-  async execute(rawArgs: string, signal: AbortSignal, context: ToolContext): Promise<ToolResult> {
+  async execute(rawArgs: string, signal: AbortSignal, _context: ToolContext): Promise<ToolResult> {
     if (signal.aborted) {
       return { ok: false, text: '已停止：更新计划被用户中止' };
-    }
-    if (!context.emitPlan) {
-      // 没有推送通道（历史回放等非流式场景）：工具不可用，但不要让整轮走到 chat:error
-      return { ok: false, text: '当前场景不支持维护计划清单' };
     }
     const { steps } = parseArgs<{ steps?: unknown }>(rawArgs);
     if (!Array.isArray(steps)) {
@@ -618,7 +616,7 @@ const updatePlan: HarnessTool = {
         text: `计划步数过多（上限 ${UPDATE_PLAN_MAX_STEPS} 步，当前 ${steps.length} 步）`,
       };
     }
-    const okSteps: PlanStep[] = [];
+    const okSteps: HarnessPlanStep[] = [];
     for (let index = 0; index < steps.length; index += 1) {
       const raw = steps[index];
       if (typeof raw !== 'object' || raw === null) {
@@ -642,10 +640,10 @@ const updatePlan: HarnessTool = {
           text: `参数错误：steps[${index}].status 非法（应为 pending / in_progress / done）`,
         };
       }
-      okSteps.push({ title, status: status as PlanStepStatus });
+      okSteps.push({ title, status });
     }
-    context.emitPlan(okSteps);
-    return { ok: true, text: `已更新计划清单（${okSteps.length} 步）` };
+    // 数据随结果交回 loop，由 loop 发 plan-updated 事件；工具不推 UI
+    return { ok: true, text: `已更新计划清单（${okSteps.length} 步）`, plan: okSteps };
   },
 };
 

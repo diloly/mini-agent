@@ -18,6 +18,7 @@ import {
   ProviderError,
   joinApiPath,
   newProviderError,
+  pickContextWindow,
   providerErrorFromStatus,
   readResponseText,
   toProviderError,
@@ -137,7 +138,12 @@ export const customProvider: LLMProvider = {
       // 与 DeepSeek 不同：这里没有 FALLBACK_MODELS 可回退，空列表就老实返回空
       return (payload.data ?? [])
         .filter((item): item is { id: string } => typeof item?.id === 'string' && item.id.length > 0)
-        .map<ModelInfo>((item) => ({ id: item.id, label: item.id }));
+        .map<ModelInfo>((item) => {
+          // 标准 OpenAI 兼容接口不返回窗口，但 OpenRouter / vLLM 等网关会带
+          // context_length / max_model_len —— 有就带出来供设置页自动填表，没有就不猜
+          const contextWindow = pickContextWindow(item);
+          return { id: item.id, label: item.id, ...(contextWindow ? { contextWindow } : {}) };
+        });
     } catch {
       return [];
     } finally {

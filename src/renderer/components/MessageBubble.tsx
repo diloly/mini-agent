@@ -24,12 +24,40 @@ import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type PlanStep, type PlanStep
 import { buildTimeline } from '../../shared/timeline';
 import { openExternal } from '../lib/api';
 
-/** 工具步骤状态对应的纯文字图标（不引入图片资源，保持简约） */
-const STEP_ICON: Record<ToolStepStatus, string> = {
-  running: '◐',
-  done: '✓',
-  error: '✕',
-};
+/**
+ * 工具步骤状态图标：手绘 SVG，替代 ◐ / ✓ / ✕ 字符。
+ *
+ * 与计划块同一套视觉语言（ActionIcon：24 视图盒、1.75 描边、currentColor 跟随
+ * 所在行的颜色），但形状刻意与计划图标区分语义：工具行是「执行记录」，用不带
+ * 外圆的勾 / 叉更轻盈；计划块是「清单条目」，用带外圆的圆环 / 圆勾。
+ *
+ * - running：半圆弧自转（执行中；与计划块的进行中同款动画）
+ * - done：勾
+ * - error：叉
+ */
+function ToolStepIcon({ status }: { status: ToolStepStatus }): ReactNode {
+  if (status === 'running') {
+    return (
+      <ActionIcon className="shrink-0 animate-spin">
+        <circle cx="12" cy="12" r="8.5" opacity={0.25} />
+        <path d="M20.5 12a8.5 8.5 0 0 0-8.5-8.5" />
+      </ActionIcon>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <ActionIcon className="shrink-0">
+        <path d="M6.5 6.5l11 11" />
+        <path d="M17.5 6.5l-11 11" />
+      </ActionIcon>
+    );
+  }
+  return (
+    <ActionIcon className="shrink-0">
+      <path d="M5 12.5l4.5 4.5L19 7" />
+    </ActionIcon>
+  );
+}
 
 /**
  * 计划步骤状态图标：手绘 SVG，替代 ☐ / ◐ / ☑ 字符。
@@ -425,7 +453,7 @@ export default function MessageBubble(props: MessageBubbleProps) {
                       className={`flex min-w-0 items-center gap-1.5 text-[12px] font-mono ${step.status === 'error' ? 'text-danger' : 'text-muted'}`}
                       title={step.result}
                     >
-                      <span className="shrink-0">{STEP_ICON[step.status]}</span>
+                      <ToolStepIcon status={step.status} />
                       <span className="min-w-0 break-all">
                         {`${step.name}(${step.args})`}
                         {step.status === 'done' && step.elapsedMs != null ? ` · ${step.elapsedMs}ms` : ''}

@@ -15,6 +15,7 @@ import {
   DEFAULT_NUM_CTX,
   DEFAULT_THEME_MODE,
   isThemeMode,
+  isValidContextWindow,
   isValidNumCtx,
   type AppConfig,
   type Conversation,
@@ -145,6 +146,11 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
         baseUrl: rawProviders.deepseek?.baseUrl ?? fallback.providers.deepseek.baseUrl,
         model: rawProviders.deepseek?.model ?? fallback.providers.deepseek.model,
         apiKeyEnc: rawProviders.deepseek?.apiKeyEnc,
+        // 仅用量统计的分母：非法值直接丢弃（读取侧回退 DEFAULT_CONTEXT_WINDOW），
+        // 不写默认值 —— 旧配置无需迁移，盘上形态保持干净
+        contextWindow: isValidContextWindow(rawProviders.deepseek?.contextWindow)
+          ? rawProviders.deepseek.contextWindow
+          : undefined,
       },
       ollama: {
         baseUrl: rawProviders.ollama?.baseUrl ?? fallback.providers.ollama.baseUrl,
@@ -159,6 +165,10 @@ function normalizeConfig(raw: Partial<AppConfig> | undefined | null): AppConfig 
         baseUrl: rawProviders.custom?.baseUrl ?? fallback.providers.custom.baseUrl,
         model: rawProviders.custom?.model ?? fallback.providers.custom.model,
         apiKeyEnc: rawProviders.custom?.apiKeyEnc,
+        // 同 deepseek：仅统计用，非法值丢弃、读取侧回退默认
+        contextWindow: isValidContextWindow(rawProviders.custom?.contextWindow)
+          ? rawProviders.custom.contextWindow
+          : undefined,
       },
     },
     // 磁盘文件可被手改：只认真正的布尔值，缺字段 / 字符串 "false" / 非法值一律回退为默认（开启）

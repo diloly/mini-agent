@@ -5,15 +5,22 @@
  * - 不引任何 agent 框架（不装 @openai/agents / langchain / zod），全部手写；
  * - HarnessTool 把「工具声明」与「执行函数」绑定在一起，loop 只认 define 与 execute；
  * - execute 必须自己吞掉异常并返回可读字符串，绝不向上抛，保证工具失败只回灌给模型、
- *   而不会让整轮生成走到 chat:error。
+ *   而不会让整轮生成走到 chat:error；
+ * - 工具与 loop 都不认识 UI：没有「推给渲染层」的回调。update_plan 的清单更新
+ *   由 ToolResult.plan 带回，loop 转成领域事件（events.ts）后外发，谁听谁转成 UI。
  */
 import type { ToolDefinition } from '../providers/types';
-import type { PlanStep } from '../../shared/types';
+import type { HarnessPlanStep } from './events';
 
 /** 工具执行结果：ok 标识是否「业务成功」，text 是回灌给模型的文案 */
 export interface ToolResult {
   ok: boolean;
   text: string;
+  /**
+   * 本条结果附带的计划清单快照（目前只有 update_plan 会带）：整份覆盖，非增量。
+   * 工具只负责产出数据，何时、如何外发由 loop 决定——工具不直接触碰任何推送通道。
+   */
+  plan?: HarnessPlanStep[];
 }
 
 /**
@@ -21,6 +28,9 @@ export interface ToolResult {
  *
  * 刻意不用模块级全局变量 —— 两个会话并发生成时，全局变量会被后启动的那一轮覆盖，
  * 结果是 A 会话的工具跑到 B 会话的工作区里去读写文件。
+ *
+ * 这里也**没有任何 UI 回调**：想知道「发生了什么」的调用方订阅 loop 的事件
+ * （见 events.ts 的 HarnessEventSink），工具本身对渲染层一无所知。
  */
 export interface ToolContext {
   /** 本次生成所属会话的工作区根目录（绝对路径） */
@@ -34,12 +44,6 @@ export interface ToolContext {
    * `.agent/memory/` 目录，留着只会白占一份 tool schema 的 token。
    */
   memoryEnabled: boolean;
-  /**
-   * 推送本轮计划清单快照（由 update_plan 工具调用）。
-   * 主进程会据此 emit CHAT_PLAN 事件给渲染层，并记入 assistant 消息的 meta.plan。
-   * 可选：历史会话回放等不流式推送的场景可能不提供，此时工具直接返回失败文案。
-   */
-  emitPlan?: (plan: PlanStep[]) => void;
   /**
    * 技能根目录（绝对路径）：<userData>/skills。
    * 与 workspaceRoot 同层下发 —— 「脚本只能跑在技能目录内」这条围栏需要一个可信的根，

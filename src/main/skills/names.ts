@@ -64,3 +64,25 @@ export const SKILL_ROOT_PREFIX = '@/';
  * 点开头 = 应用内部产物 ⇒ `isSkillPack` 要求目录内有 `SKILL.md`，它没有 ⇒ 天然不进技能清单。
  */
 export const SHARED_BIN_DIR = '.bin';
+
+/**
+ * 导入临时目录的前缀（`<skillsRoot>/.importing-<时间戳>-<随机>`）。
+ * 正常路径下要么已 rename 成技能、要么已回滚删除；只有复制途中被强杀才会残留
+ * （启动时由 `cleanupStaleImports` 清掉）。
+ */
+export const IMPORTING_DIR_PREFIX = '.importing-';
+
+/**
+ * 是否为**应用自己创建的**内部产物目录（不是用户放的非法技能目录）。
+ *
+ * 为什么要区分：`registry` 扫描时会对「点开头 / 非法字符」的一级目录记 warning，
+ * 目的是让用户手放的非法目录（如 `中文技能`、`.my-skill`）留痕 —— 否则技能会无声消失，
+ * 模型还会断言「这个技能不存在」。但 `.bin`（共享程序）与 `.importing-*`（导入临时目录）
+ * 是**设计上就该存在**的，它们本来就不该被当成技能，每次扫描都报一条 warning 只是噪音，
+ * 会淹没真正需要用户处理的那条。
+ *
+ * 因此：内部产物 ⇒ 静默跳过；未知的非法目录名 ⇒ 照旧 warning。
+ */
+export function isInternalSkillDirName(name: string): boolean {
+  return name === SHARED_BIN_DIR || name.startsWith(IMPORTING_DIR_PREFIX);
+}

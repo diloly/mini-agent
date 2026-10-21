@@ -21,7 +21,7 @@ import type {
   ClearLocalDataRequest,
   ClearLocalDataResult,
   ConfigSaveInput,
-  Conversation,
+  ContextStatsResponse,
   ConversationSummary,
   ListModelsDraft,
   OkResult,
@@ -37,7 +37,7 @@ import type {
   SkillOpenDirResult,
   SkillSummary,
 } from '../../shared/ipc-channels';
-import type { ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
+import type { Conversation, ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
 import type { MiniAgentApi } from '../types/window';
 
 /** 取 preload 注入的 API；未就绪时给出明确报错，便于定位 preload 加载失败 */
@@ -137,6 +137,13 @@ export function listModels(providerId: ProviderId, draft?: ListModelsDraft): Pro
 /** 续跑：接着一条被中止的 assistant 消息从 checkpoint 继续跑 */
 export function resumeChat(request: ChatResumeRequest): Promise<ChatResumeResponse> {
   return ensureApi().resumeChat(request);
+}
+
+/** 上下文用量统计：按真实装配口径估算已用 token 与窗口大小 */
+export function getContextStats(
+  conversationId: string,
+): Promise<ContextStatsResponse> {
+  return ensureApi().getContextStats({ conversationId });
 }
 
 /** 订阅增量文本；返回取消订阅函数 */

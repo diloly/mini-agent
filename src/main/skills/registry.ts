@@ -6,6 +6,10 @@
  * - 若 `D/SKILL.md` 是文件 ⇒ `D` 本身就是一个「根下技能」（一级技能）；
  * - 否则视 `D` 为**套件容器**，再看它的子目录 `S`：若 `S/SKILL.md` 是文件 ⇒ `D/S` 是「套件内技能」（二级技能）；
  * - **绝不** `recursive: true`（只有两层，无需递归）；符号链接目录跳过（防「软链指到系统目录」被当成技能包）；非目录条目忽略；
+ * - **内部产物目录静默跳过**（`.bin` 共享程序、`.importing-*` 导入临时目录，见 `names.ts` 的
+ *   `isInternalSkillDirName`）：它们设计上就该存在、本来就不是技能，故不记 warning；
+ *   其余「点开头 / 非法字符」的目录一律 warning 留痕 —— 否则用户手放的技能会无声消失，
+ *   模型还会断言「这个技能不存在」；
  * - 套件归属**路径优先 + 清单回退**：二级技能由目录路径推导（套件 = 一级目录名）；一级技能回退查技能根下的 `.suites.json` 清单。
  *
  * 本模块是**纯逻辑**：`skillsRoot` 由调用方**显式传参**（与 `content.ts` 一致），
@@ -15,7 +19,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { isSafeSkillDirName } from './names';
+import { isInternalSkillDirName, isSafeSkillDirName } from './names';
 import { parseFrontmatter, readSkillMdHead } from './frontmatter';
 import { readSuites } from './suites';
 
@@ -174,6 +178,13 @@ async function scanSkills(skillsRoot: string): Promise<SkillMeta[]> {
       continue;
     }
     const topName = dirent.name;
+    if (isInternalSkillDirName(topName)) {
+      // 应用自己创建的内部产物：`.bin`（跨技能共用程序）、`.importing-*`（导入临时目录）。
+      // 它们**设计上就该存在**、本来就不是技能 ⇒ 静默跳过，不记 warning。
+      // 若在这里报警，每次扫描都会刷一条（技能清单每轮生成都会重建），
+      // 噪音会把「用户手放了非法目录」那条真正需要处理的信息淹掉。
+      continue;
+    }
     if (!isSafeSkillDirName(topName)) {
       // 目录名无法被 skill 参数寻址，列出来只会误导模型 ⇒ 跳过并记 warning
       console.warn(`[skills] 跳过非法技能目录名：${topName}`);
@@ -208,6 +219,11 @@ async function scanSkills(skillsRoot: string): Promise<SkillMeta[]> {
         continue;
       }
       const subName = child.name;
+      if (isInternalSkillDirName(subName)) {
+        // 与一级同理：套件目录下也可能出现 `.bin`（技能包自带的共享程序目录）。
+        // 按「一级目录名 + 子目录名」都走同一判断，避免二级位置漏判又变成噪音源。
+        continue;
+      }
       if (!isSafeSkillDirName(subName)) {
         console.warn(`[skills] 跳过非法技能目录名：${topName}/${subName}`);
         continue;

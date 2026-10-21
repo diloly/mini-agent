@@ -11,11 +11,12 @@
  * 主按钮走「前景色底 + 背景色图标」，随浅色 / 深色主题自然反转。
  */
 import { Button, TextArea } from '@heroui/react';
-import { useState, type KeyboardEvent } from 'react';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import ModelPicker from './ModelPicker';
 import WorkspacePicker from './WorkspacePicker';
 import { useAppStore, isProviderConfigured } from '../store/useAppStore';
 import { attachFiles } from '../lib/api';
+import type { ContextStatsResponse } from '../../shared/ipc-channels';
 import type { MessageAttachment } from '../../shared/types';
 
 /** 人类可读体积（附件 chip 展示用） */
@@ -36,6 +37,77 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+/** token 数的紧凑展示：162200 → "162.2K"，980 → "980"（与 WorkBuddy 同款口径） */
+function formatTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0';
+  }
+  if (value < 1000) {
+    return String(Math.round(value));
+  }
+  return `${(value / 1000).toFixed(1)}K`;
+}
+
+/**
+ * 上下文用量环：细环表示「已用 / 窗口」，hover 出深色气泡显示明细。
+ *
+ * 颜色三档只用项目已有色板：<70% 常规灰（text-muted）、70%-90% 强调色
+ * （text-accent，提醒该考虑压缩了）、>=90% 危险红（text-danger）。
+ * 环的旋转用 -rotate-90 让进度从 12 点方向顺时针走（SVG 默认从 3 点方向起）。
+ */
+function ContextUsageRing({ stats }: { stats: ContextStatsResponse }): ReactNode {
+  const [hovered, setHovered] = useState(false);
+  const percent = stats.window > 0 ? (stats.tokens / stats.window) * 100 : 0;
+  const size = 18;
+  const stroke = 2.5;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  // 超过 100% 时环画满（数值仍按真实百分比显示，让用户知道已经超窗）
+  const ratio = Math.min(Math.max(percent, 0), 100) / 100;
+  const toneClass = percent >= 90 ? 'text-danger' : percent >= 70 ? 'text-accent' : 'text-muted';
+  return (
+    <div
+      className="relative flex shrink-0 items-center"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className={`-rotate-90 ${toneClass}`}
+        aria-hidden="true"
+      >
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={stroke}
+          opacity={0.18}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={stroke}
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - ratio)}
+          strokeLinecap="round"
+        />
+      </svg>
+      {hovered ? (
+        <div className="pointer-events-none absolute bottom-full right-0 z-20 mb-2 whitespace-nowrap rounded-[6px] bg-fg px-2 py-1 text-[11px] text-background shadow-md">
+          {`${percent.toFixed(1)}% · ${formatTokens(stats.tokens)} / ${formatTokens(stats.window)} 上下文已使用`}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Composer() {
   const [draft, setDraft] = useState('');
   // 待发送的附件（已由主进程复制进工作区，只带 name / path / size 元数据）
@@ -44,6 +116,7 @@ export default function Composer() {
   const [attachError, setAttachError] = useState<string | null>(null);
   const loading = useAppStore((state) => state.loading);
   const config = useAppStore((state) => state.config);
+  const contextStats = useAppStore((state) => state.contextStats);
   const activeConversationId = useAppStore((state) => state.activeConversationId);
   const activeWorkspaceRoot = useAppStore((state) => state.activeWorkspaceRoot);
   const createConversation = useAppStore((state) => state.createConversation);
@@ -229,41 +302,45 @@ export default function Composer() {
             <WorkspacePicker />
             <ModelPicker />
           </div>
-          {loading ? (
-            <button
-              type="button"
-              className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-fg text-background"
-              onClick={() => void abortActive()}
-              aria-label="停止生成"
-              title="停止生成"
-            >
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
-                <rect x="7" y="7" width="10" height="10" rx="2" />
-              </svg>
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-fg text-background disabled:cursor-not-allowed disabled:bg-surface-secondary disabled:text-muted"
-              disabled={!canSend}
-              onClick={() => void handleSend()}
-              aria-label="发送"
-              title="发送"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* 上下文用量环：hover 出「xx% · 已用 / 窗口 上下文已使用」气泡 */}
+            {contextStats ? <ContextUsageRing stats={contextStats} /> : null}
+            {loading ? (
+              <button
+                type="button"
+                className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-fg text-background"
+                onClick={() => void abortActive()}
+                aria-label="停止生成"
+                title="停止生成"
               >
-                <path d="M12 19V5" />
-                <path d="M5 12l7-7 7 7" />
-              </svg>
-            </button>
-          )}
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
+                  <rect x="7" y="7" width="10" height="10" rx="2" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-fg text-background disabled:cursor-not-allowed disabled:bg-surface-secondary disabled:text-muted"
+                disabled={!canSend}
+                onClick={() => void handleSend()}
+                aria-label="发送"
+                title="发送"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M12 19V5" />
+                  <path d="M5 12l7-7 7 7" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

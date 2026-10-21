@@ -35,6 +35,8 @@ import {
   type ChatStepEvent,
   type ChatPlanEvent,
   type ConfigSaveInput,
+  type ContextStatsRequest,
+  type ContextStatsResponse,
   type ConversationSummary,
   type DeleteConversationRequest,
   type GetConversationRequest,
@@ -49,10 +51,13 @@ import {
 } from '../shared/ipc-channels';
 import {
   CONTEXT_MESSAGE_LIMIT,
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_CONVERSATION_TITLE,
+  DEFAULT_NUM_CTX,
   DEFAULT_THEME_MODE,
   ERROR_TEXT,
   isThemeMode,
+  isValidContextWindow,
   isValidNumCtx,
   sortConversationsByPinned,
   TITLE_MAX_LENGTH,
@@ -68,10 +73,11 @@ import {
   type PublicConfig,
   type ToolStep,
 } from '../shared/types';
+import { estimateTokens } from '../shared/tokens';
 import { getProvider, isProviderId } from './providers';
 import { combineSignals } from './providers/sse';
 import { errorMessage, toProviderError, type LlmMessage, type LLMProvider } from './providers/types';
-import { runAgentLoop, type ToolContext } from './harness';
+import { runAgentLoop, type HarnessEvent, type ToolContext } from './harness';
 import { getBackupRoot, getDefaultWorkspaceRoot, resolveWorkspaceRoot } from './workspace';
 import { exportConversationMarkdown } from './conversation-export';
 import { buildMemorySystemMessage, buildWorkspaceRulesMessage, extractWorkspaceMemory, readWorkspaceMemory } from './workspace-memory';
@@ -210,12 +216,14 @@ interface ChatSession {
 /** requestId → 进行中的生成任务 */
 const running = new Map<string, ChatSession>();
 
-/** 各 Provider 的通用配置片段（DeepSeek 额外带 apiKeyEnc；Ollama 额外带 numCtx） */
+/** 各 Provider 的通用配置片段（DeepSeek / Custom 额外带 apiKeyEnc，Ollama 额外带 numCtx） */
 interface ProviderSettingsLike {
   baseUrl: string;
   model: string;
   apiKeyEnc?: string;
   numCtx?: number;
+  /** deepseek / custom 的上下文窗口（仅用量统计用；ollama 走 numCtx） */
+  contextWindow?: number;
 }
 
 /** 取配置的某个 Provider 片段（用类型断言避免对 providerId 做分支判断） */
@@ -276,6 +284,7 @@ function toPublicConfig(config: AppConfig, lastConversationId: string | undefine
         baseUrl: deepseek.baseUrl,
         model: deepseek.model,
         hasApiKey: hasSecret('deepseek', deepseek.apiKeyEnc),
+        contextWindow: deepseek.contextWindow,
       },
       ollama: {
         baseUrl: ollama.baseUrl,
@@ -286,6 +295,7 @@ function toPublicConfig(config: AppConfig, lastConversationId: string | undefine
         baseUrl: custom.baseUrl,
         model: custom.model,
         hasApiKey: hasSecret('custom', custom.apiKeyEnc),
+        contextWindow: custom.contextWindow,
       },
     },
     models: { deepseek: [], ollama: [], custom: [] },
@@ -352,6 +362,23 @@ function buildContextMessages(messages: Message[], limit = CONTEXT_MESSAGE_LIMIT
     role: message.role,
     content: withAttachmentNote(message),
   }));
+}
+
+/**
+ * 解析某 Provider 的上下文窗口（token），作为「上下文用量」百分比的分母。
+ * - ollama：用 numCtx —— 它就是请求体里真实生效的窗口
+ * - deepseek / custom：用配置的 contextWindow，缺省回退 DEFAULT_CONTEXT_WINDOW
+ *
+ * 非法值一律回退默认：分母算错只会让百分比失真，绝不能让它把统计搞成 NaN 或 0 除。
+ */
+function resolveContextWindow(config: AppConfig, providerId: ProviderId): number {
+  if (providerId === 'ollama') {
+    return isValidNumCtx(config.providers.ollama.numCtx)
+      ? config.providers.ollama.numCtx
+      : DEFAULT_NUM_CTX;
+  }
+  const configured = getProviderSettings(config, providerId).contextWindow;
+  return isValidContextWindow(configured) ? configured : DEFAULT_CONTEXT_WINDOW;
 }
 
 /**
@@ -604,6 +631,100 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     for (const seedStep of options?.seedSteps ?? []) {
       stepMap.set(seedStep.id, seedStep);
     }
+    /**
+     * harness 事件 → UI 信封 + 主进程持久化。
+     *
+     * 这是 harness 与渲染层之间**唯一**的适配层：loop 只发领域事实（events.ts），
+     * 这里负责它不关心的三件事——
+     * ① UI 信封：补 requestId / messageId，转成 CHAT_CHUNK / CHAT_STEP / CHAT_PLAN；
+     * ② 展示字段：contentOffset（正文分界点）由本层按「事件到达时已看到多少正文」
+     *    折算，running 与最终态共用一个值，渲染层据此把工具插到正文的正确位置；
+     * ③ 落盘时机：conversation-snapshot 到达时写 checkpoint（可续跑态）。
+     * 将来要给 UI 加新展示、或改持久化策略，只改本函数，loop 与工具一行不动。
+     */
+    const contentOffsets = new Map<string, number>();
+    const emitHarness = (event: HarnessEvent): void => {
+      switch (event.type) {
+        case 'text': {
+          if (!event.delta) {
+            return;
+          }
+          session.text += event.delta;
+          emit(CHANNELS.CHAT_CHUNK, {
+            requestId: session.requestId,
+            messageId: session.assistantMessageId,
+            delta: event.delta,
+          });
+          return;
+        }
+        case 'tool-call-start': {
+          // 模型刚宣布要调工具（流式期间）：建 running 占位，参数此刻不完整故留空；
+          // 记住此刻的正文长度——最终态步骤会取回同一个分界点。
+          const contentOffset = session.text.length;
+          contentOffsets.set(event.id, contentOffset);
+          const step: ToolStep = {
+            id: event.id,
+            name: event.name,
+            args: event.arguments ?? '',
+            status: 'running',
+            contentOffset,
+          };
+          stepMap.set(step.id, step);
+          emit(CHANNELS.CHAT_STEP, {
+            requestId: session.requestId,
+            messageId: session.assistantMessageId,
+            step,
+          } satisfies ChatStepEvent);
+          return;
+        }
+        case 'tool-call-end': {
+          // 按 id 覆盖 running 占位（渲染层同 id 覆盖为最终态）；分界点取 start 时记下的值
+          const step: ToolStep = {
+            id: event.id,
+            name: event.name,
+            args: event.arguments,
+            status: event.ok ? 'done' : 'error',
+            result: event.preview,
+            elapsedMs: event.elapsedMs,
+            contentOffset: contentOffsets.get(event.id),
+          };
+          contentOffsets.delete(event.id);
+          stepMap.set(step.id, step);
+          emit(CHANNELS.CHAT_STEP, {
+            requestId: session.requestId,
+            messageId: session.assistantMessageId,
+            step,
+          } satisfies ChatStepEvent);
+          return;
+        }
+        case 'plan-updated': {
+          // 计划清单整份覆盖：渲染层 CHAT_PLAN + 收尾落盘 meta.plan
+          session.plan = event.steps;
+          emit(CHANNELS.CHAT_PLAN, {
+            requestId: session.requestId,
+            messageId: session.assistantMessageId,
+            plan: event.steps,
+          } satisfies ChatPlanEvent);
+          return;
+        }
+        case 'conversation-snapshot': {
+          // 每个工具结果回填后落一版「可续跑态」：被动崩溃（进程被杀）时
+          // 磁盘上仍有最近一次完整 convo，用户点「继续」才能接着中断前的上下文跑。
+          // checkpoint 写失败绝不能打断生成，故只吞异常不重抛。
+          void checkpoint
+            .writeCheckpoint({
+              version: 1,
+              conversationId: session.conversationId,
+              assistantMessageId: session.assistantMessageId,
+              turn: event.turn,
+              convo: event.convo,
+              savedAt: Date.now(),
+            })
+            .catch(() => undefined);
+          return;
+        }
+      }
+    };
     try {
       provider = getProvider(providerId);
       const config = await readConfig();
@@ -618,43 +739,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         initialText: options?.initialText,
         startTurn: options?.startTurn,
         resumeNote: options?.resumeNote,
-        callbacks: {
-          onDelta: (delta) => {
-            if (!delta) {
-              return;
-            }
-            session.text += delta;
-            emit(CHANNELS.CHAT_CHUNK, {
-              requestId: session.requestId,
-              messageId: session.assistantMessageId,
-              delta,
-            });
-          },
-          onStep: (step) => {
-            // 按 id 覆盖式写入：running → done/error 同一 id 会刷新为最终态
-            stepMap.set(step.id, step);
-            emit(CHANNELS.CHAT_STEP, {
-              requestId: session.requestId,
-              messageId: session.assistantMessageId,
-              step,
-            } satisfies ChatStepEvent);
-          },
-          onCheckpoint: (convo, turn) => {
-            // 每个工具结果回填后落一版「可续跑态」：被动崩溃（进程被杀）时
-            // 磁盘上仍有最近一次完整 convo，用户点「继续」才能接着中断前的上下文跑。
-            // checkpoint 写失败绝不能打断生成，故只吞异常不重抛。
-            void checkpoint
-              .writeCheckpoint({
-                version: 1,
-                conversationId: session.conversationId,
-                assistantMessageId: session.assistantMessageId,
-                turn,
-                convo,
-                savedAt: Date.now(),
-              })
-              .catch(() => undefined);
-          },
-        },
+        emit: emitHarness,
       });
       // 成功收尾：checkpoint 使命完成，先删再 finalize。
       // 无账号（未登录）时本就写不出 checkpoint 文件，直接跳过删除。
@@ -684,8 +769,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       });
       if (providerError.code === 'ABORTED') {
         // 用户主动停止：已生成内容照常落盘，不算错误（工具步骤也一并保留）。
-        // resumable 按 checkpoint 是否存在判定：loop 的 onCheckpoint 已在中止前
-        // 落过快照（含半截批次补跑后的最新态），界面据此显示「继续」。
+        // resumable 按 checkpoint 是否存在判定：loop 的 conversation-snapshot 事件已在中止前
+        // 被本层转成快照落盘（含半截批次补跑后的最新态），界面据此显示「继续」。
         const abortAccountId = getActiveAccountId();
         const resumable = abortAccountId
           ? (await checkpoint.readCheckpoint(
@@ -899,17 +984,6 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     };
     running.set(requestId, session);
 
-    // 计划清单推送：update_plan 工具经此把整份快照推给渲染层，并记入 session 供收尾落盘。
-    // 必须等 session 建好后再挂，因为 emitPlan 要填 session.requestId / assistantMessageId。
-    prepared.toolContext.emitPlan = (plan: PlanStep[]) => {
-      session.plan = plan;
-      emit(CHANNELS.CHAT_PLAN, {
-        requestId: session.requestId,
-        messageId: session.assistantMessageId,
-        plan,
-      } satisfies ChatPlanEvent);
-    };
-
     // 5) 立即返回，不等待模型响应
     // 注入三类 system 消息：① 常驻的工作区约定（含每日笔记要求，每轮都要在）；
     // ② 技能清单（有技能才注入，见 skills/catalog.ts）；③ 工作区长期记忆（有内容才注入）。
@@ -1091,15 +1165,6 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     if (prepared.plan) {
       session.plan = prepared.plan;
     }
-    // 计划清单推送：update_plan 工具经此把整份快照推给渲染层，并记入 session 供收尾落盘
-    prepared.toolContext.emitPlan = (plan: PlanStep[]) => {
-      session.plan = plan;
-      emit(CHANNELS.CHAT_PLAN, {
-        requestId: session.requestId,
-        messageId: session.assistantMessageId,
-        plan,
-      } satisfies ChatPlanEvent);
-    };
 
     // 以 checkpoint 的完整 convo 为上下文起跑；loop 内部会先补跑半截工具批次、
     // 再追加 resumeNote，然后从 cp.turn + 1 轮继续
@@ -1120,6 +1185,65 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     return { requestId };
   }
 
+  /**
+   * 上下文用量统计：按与真实请求完全相同的口径装配后估算 token。
+   * 口径 = system（工作区规则 + 技能清单 + 记忆）+ buildContextMessages（最近 N 条），
+   * 与 handleChatSend 里 contextMessages 的构造保持一致 —— 两处口径一旦漂移，
+   * 用户看到的百分比就不再代表「下一轮实际会用掉多少」。
+   *
+   * 纯读操作：不落盘、不触发记忆提炼；listSkills 有 mtime 缓存，记忆是单个小文件，
+   * 消息变化后调用一次的开销可以忽略。
+   */
+  async function handleContextStats(
+    _event: IpcMainInvokeEvent,
+    request: ContextStatsRequest,
+  ): Promise<ContextStatsResponse> {
+    const conversationId = typeof request?.conversationId === 'string' ? request.conversationId : '';
+    const config = await readConfig();
+    const contextWindow = resolveContextWindow(config, config.activeProviderId);
+    const empty: ContextStatsResponse = {
+      conversationId,
+      tokens: 0,
+      window: contextWindow,
+      messageCount: 0,
+      limit: CONTEXT_MESSAGE_LIMIT,
+    };
+    if (!conversationId) {
+      return empty;
+    }
+    const list = await readConversations();
+    const conversation = list.find((item) => item.id === conversationId);
+    if (!conversation) {
+      return empty;
+    }
+    const workspaceRoot = resolveWorkspaceRoot(conversation);
+    const systemMessages: LlmMessage[] = [
+      buildWorkspaceRulesMessage(workspaceRoot, config.memoryEnabled),
+    ];
+    const catalog = buildSkillsCatalogMessage(await listSkills(skillsRoot()));
+    if (catalog) {
+      systemMessages.push(catalog);
+    }
+    if (config.memoryEnabled) {
+      const memory = await readWorkspaceMemory(workspaceRoot);
+      if (memory.length > 0) {
+        systemMessages.push(buildMemorySystemMessage(memory));
+      }
+    }
+    const contextMessages = [...systemMessages, ...buildContextMessages(conversation.messages)];
+    let tokens = 0;
+    for (const message of contextMessages) {
+      tokens += estimateTokens(message.content);
+    }
+    return {
+      conversationId,
+      tokens,
+      window: contextWindow,
+      messageCount: contextMessages.length,
+      limit: CONTEXT_MESSAGE_LIMIT,
+    };
+  }
+
   async function handleConfigGet(_event: IpcMainInvokeEvent): Promise<PublicConfig> {
     const meta = await readAccountMeta();
     return toPublicConfig(await readConfig(), meta.lastConversationId);
@@ -1132,7 +1256,13 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     const patch: ConfigSaveInput = input ?? {};
     const providerPatches: Array<{
       id: ProviderId;
-      settings?: { baseUrl?: string; model?: string; apiKey?: string; numCtx?: number };
+      settings?: {
+        baseUrl?: string;
+        model?: string;
+        apiKey?: string;
+        numCtx?: number;
+        contextWindow?: number | null;
+      };
     }> = [
       { id: 'deepseek', settings: patch.deepseek },
       { id: 'ollama', settings: patch.ollama },
@@ -1165,6 +1295,19 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         if (typeof entry.settings.numCtx === 'number' && isValidNumCtx(entry.settings.numCtx)) {
           // 只接受合法整数：与 storage.normalizeConfig 同一口径，非法值直接忽略不改动现值
           settings.numCtx = entry.settings.numCtx;
+        }
+        // 上下文窗口（仅用量统计的分母）：只认 deepseek / custom —— ollama 的窗口由
+        // numCtx 单独管，两个字段同时存在会互相打架。非法值直接忽略；
+        // null 表示清除（删字段，回退 DEFAULT_CONTEXT_WINDOW），与「从未配置」同一形态。
+        if (entry.id === 'deepseek' || entry.id === 'custom') {
+          if (entry.settings.contextWindow === null) {
+            delete settings.contextWindow;
+          } else if (
+            typeof entry.settings.contextWindow === 'number' &&
+            isValidContextWindow(entry.settings.contextWindow)
+          ) {
+            settings.contextWindow = entry.settings.contextWindow;
+          }
         }
         if (typeof entry.settings.apiKey === 'string') {
           // 只进不出：返回密文交给配置落盘；不可用时返回 undefined，仅内存持有
@@ -1401,6 +1544,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerHandler(CHANNELS.CHAT_SEND, handleChatSend);
     registerHandler(CHANNELS.CHAT_ABORT, handleChatAbort);
     registerHandler(CHANNELS.CHAT_RESUME, handleChatResume);
+    registerHandler(CHANNELS.CONTEXT_STATS, handleContextStats);
     registerHandler(CHANNELS.CONFIG_GET, handleConfigGet);
     registerHandler(CHANNELS.CONFIG_SAVE, handleConfigSave);
     registerHandler(CHANNELS.MODELS_LIST, handleModelsList);

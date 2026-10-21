@@ -17,7 +17,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SkillDeleteResult, SkillImportResult, SkillImportSkip } from '../../shared/skills';
-import { isSafeSkillDirName, isSafeSkillRef } from './names';
+import { IMPORTING_DIR_PREFIX, isSafeSkillDirName, isSafeSkillRef } from './names';
 import { parseFrontmatter, readSkillMdHead } from './frontmatter';
 import { invalidateSkillsCache } from './registry';
 import { forgetSkill } from './suites';
@@ -378,7 +378,7 @@ async function copySkillTree(src: string, root: string, relId: string): Promise<
   //    `cleanupStaleImports` 只扫技能根**一级**的 `.importing-*`，藏进子目录的残留永远清不掉。
   const temp = path.join(
     root,
-    `.importing-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    `${IMPORTING_DIR_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   );
   const dest = path.join(root, relId);
   const destParent = path.dirname(dest);
@@ -689,7 +689,7 @@ export async function cleanupStaleImports(skillsRoot: string): Promise<void> {
     const root = path.resolve(skillsRoot);
     const dirents = await fs.promises.readdir(root, { withFileTypes: true });
     for (const dirent of dirents) {
-      if (!dirent.isDirectory() || !dirent.name.startsWith('.importing-')) {
+      if (!dirent.isDirectory() || !dirent.name.startsWith(IMPORTING_DIR_PREFIX)) {
         continue;
       }
       const stale = path.join(root, dirent.name);

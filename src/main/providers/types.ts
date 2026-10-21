@@ -171,6 +171,37 @@ export function joinApiPath(baseUrl: string, apiPath: string): string {
   return `${normalized}/${apiPath.replace(/^\/+/, '')}`;
 }
 
+/**
+ * 从模型列表条目里尽力解析上下文窗口（token）。
+ *
+ * 标准 OpenAI 兼容 GET /models 只返回 { id, object, owned_by }，**没有窗口信息**——
+ * DeepSeek 官方同样不返回，所以「纯靠拉取」拿不到 DeepSeek 的窗口。但不少网关会扩展：
+ * - OpenRouter：context_length（顶层）或 top_provider.context_length
+ * - vLLM：max_model_len
+ * - 部分聚合网关：context_window / max_context_length
+ * 有就带出来（设置页据此自动填表），没有返回 undefined（回退默认值），绝不猜。
+ */
+export function pickContextWindow(item: unknown): number | undefined {
+  if (!item || typeof item !== 'object') {
+    return undefined;
+  }
+  const record = item as Record<string, unknown>;
+  const nested = record.top_provider as Record<string, unknown> | undefined;
+  const candidates = [
+    record.context_length,
+    record.context_window,
+    record.max_context_length,
+    record.max_model_len,
+    nested?.context_length,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.round(value);
+    }
+  }
+  return undefined;
+}
+
 /** 判断异常是否为用户中止 */
 export function isAbortError(error: unknown): boolean {
   return (

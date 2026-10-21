@@ -10,8 +10,9 @@
  * conversationId__assistantMessageId 命名（conversationId 是 UUID 形态，
  * 只含小写十六进制与连字符，可安全直接拼进文件名）。
  *
- * 写入策略：每个工具结果回填后由 harness loop 的 onCheckpoint 回调触发一次
- * 整体覆盖写——被动崩溃（进程被杀）时磁盘上留下的仍是最近一次完整快照，
+ * 写入策略：由 IPC 适配层消费 harness 的 conversation-snapshot 事件触发——
+ * loop 在每个工具结果回填后都会发这条事件，适配层据此整体覆盖写一次。
+ * 被动崩溃（进程被杀）时磁盘上留下的仍是最近一次完整快照，
  * 用户点「继续」才有得可续。
  */
 import { mkdir, readFile, readdir, unlink } from 'node:fs/promises';

@@ -26,7 +26,8 @@ import {
   type ClearLocalDataRequest,
   type ClearLocalDataResult,
   type ConfigSaveInput,
-  type Conversation,
+  type ContextStatsRequest,
+  type ContextStatsResponse,
   type ConversationSummary,
   type DeleteConversationRequest,
   type GetConversationRequest,
@@ -50,7 +51,7 @@ import {
   type SkillOpenDirResult,
   type SkillSummary,
 } from '../shared/ipc-channels';
-import type { ProviderId, PublicConfig } from '../shared/types';
+import type { Conversation, ProviderId, PublicConfig } from '../shared/types';
 
 /** 事件监听器 */
 type EventListener<T> = (payload: T) => void;
@@ -114,6 +115,9 @@ const api = {
     ),
   resumeChat: (request: ChatResumeRequest): Promise<ChatResumeResponse> =>
     ipcRenderer.invoke(CHANNELS.CHAT_RESUME, request),
+  /** 上下文用量统计：按真实装配口径估算已用 token 与窗口大小 */
+  getContextStats: (request: ContextStatsRequest): Promise<ContextStatsResponse> =>
+    ipcRenderer.invoke(CHANNELS.CONTEXT_STATS, request),
   onOpenSettings: (listener: () => void): (() => void) =>
     subscribe<void>(CHANNELS.APP_OPEN_SETTINGS, () => listener()),
   /** 弹系统目录选择框，返回用户选中的工作区；用户取消时 canceled 为 true */
