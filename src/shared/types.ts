@@ -128,6 +128,12 @@ export interface MessageAttachment {
   size: number;
 }
 
+/**
+ * 用户对一条 assistant 回答的评价。
+ * 只有赞 / 踩两态：未评价时**不写该字段**，而不是写第三种「无」值。
+ */
+export type Verdict = 'up' | 'down';
+
 /** 消息的附加信息，仅 assistant 消息会写入 provider / model / 结束状态 */
 export interface MessageMeta {
   providerId?: ProviderId;
@@ -143,6 +149,17 @@ export interface MessageMeta {
   turns?: number;
   /** 有 checkpoint 可续跑：被中止且尚未续跑完成/清理的消息为 true，界面据此显示「继续」 */
   resumable?: boolean;
+  /** 用户评价（赞 / 踩）；取消评价时删字段，不留第三态 */
+  feedback?: Verdict;
+  /** 评价时间（epoch 毫秒）；与 feedback 同生同灭 */
+  feedbackAt?: number;
+  /**
+   * 生成这一轮时生效的 system prompt 模板指纹（finalize 时写入）。
+   * 刻意在收尾时算而不是建 case 时算 —— 否则「生成完又装了技能」会让指纹漂移。
+   */
+  promptVersion?: string;
+  /** 生成这一轮时暴露给模型的工具集指纹（finalize 时写入，工具集变了分数就不可比） */
+  toolSetHash?: string;
 }
 
 /** 单条消息；流式期间 content 为「已累积的完整文本」 */
@@ -435,3 +452,132 @@ export const AUTH_ERROR_TEXT: Record<AuthErrorCode, string> = {
   SERVICE_UNAVAILABLE: '登录服务未配置，请联系管理员',
   UNKNOWN: '操作失败，请稍后重试',
 };
+
+/* ───────────────────────────── 质量评测（LLM-as-judge） ───────────────────────────── */
+
+/**
+ * 生成这一轮时的指纹：谁生成的、用哪套 prompt 模板、暴露了哪些工具。
+ * 三个指纹齐全才敢把两条 case 放在一起做 A/B 比较。
+ */
+export interface GenerationFingerprint {
+  providerId: ProviderId;
+  model: string;
+  /** system prompt 模板指纹（只含手写模板文案，不含技能列表 / 记忆正文 / 绝对路径） */
+  promptVersion: string;
+  /** promptVersion 的来源：'message' = 消息自带的当时指纹；'current' = 老消息回退到当前值 */
+  promptVersionSource?: 'message' | 'current';
+  /** 工具集指纹（工具名排序后哈希） */
+  toolSetHash: string;
+  /** 生成这一轮时的应用版本 */
+  appVersion: string;
+  /** 本轮 agent loop 实际消耗的轮数 */
+  turns?: number;
+}
+
+/** 四个评分维度，取值一律为 1–5 的整数（禁止 0 分与小数） */
+export interface JudgeScores {
+  relevance: number;
+  faithfulness: number;
+  completeness: number;
+  clarity: number;
+}
+
+/** 一次评测运行的结果；失败时只有 error，不写 scores */
+export interface JudgeRun {
+  /** 运行时间（epoch 毫秒） */
+  runAt: number;
+  judgeProviderId: ProviderId;
+  judgeModel: string;
+  /** rubric 版本号：rubric 改了分数就不可比 */
+  rubricVersion: string;
+  scores?: JudgeScores;
+  /** 四维均值，保留 1 位小数 */
+  overall?: number;
+  /** 忠实度硬否决已触发（overall 被封顶） */
+  capped?: boolean;
+  /** 模型给出的理由 */
+  reason?: string;
+  /** 解析 / 校验 / 调用失败的原因 */
+  error?: string;
+}
+
+/**
+ * 一条被评测的问答快照。
+ * 刻意存**快照副本**而非引用：会话删除、消息编辑重发都不该改动已归档的评测数据。
+ */
+export interface JudgeCase {
+  id: string;
+  conversationId: string;
+  /** 被评测的 assistant 消息 id（同时是幂等键：同一消息只允许一条 case） */
+  messageId: string;
+  createdAt: number;
+  /** 反查出来的用户提问（用于分组：同一个问题前后空格不同不算不同 case） */
+  question: string;
+  /** 归一化后的问题指纹 */
+  questionHash: string;
+  answer: string;
+  /** 回答超长被截断时为 true */
+  answerTruncated: boolean;
+  /** 本轮工具调用轨迹（快照） */
+  steps: ToolStep[];
+  finishReason?: FinishReason;
+  verdict?: Verdict;
+  generation: GenerationFingerprint;
+  /** 历次评测运行，最多保留 JUDGE_RUN_LIMIT 条（含失败） */
+  runs: JudgeRun[];
+}
+
+/** 评测集列表项：不含 answer / steps，避免 IPC 负载过重 */
+export interface JudgeCaseSummary {
+  id: string;
+  conversationId: string;
+  messageId: string;
+  createdAt: number;
+  /** 提问，截断到 60 字 */
+  question: string;
+  verdict?: Verdict;
+  overall?: number;
+  /** 最弱维度（取最新一次成功 run） */
+  weakest?: keyof JudgeScores;
+  /** 是否已有至少一次成功 run */
+  hasRun: boolean;
+  /** 最新一次 run 的失败原因 */
+  error?: string;
+}
+
+/** 评测集汇总（设置页「质量」分组用） */
+export interface JudgeSummary {
+  /** case 总数 */
+  total: number;
+  /** 已有成功 run 的 case 数 */
+  evaluated: number;
+  /** 最近 30 天内创建的 case 数 */
+  window30d: number;
+  /** 忠实度硬否决触发的次数 */
+  cappedCount: number;
+  /** 所有成功 run 的 overall 均值；无数据时为 null */
+  avgOverall: number | null;
+  /** 四维均值；某维度无数据时为 null */
+  dims: Record<keyof JudgeScores, number | null>;
+  /** 被踩（verdict === 'down'）的 case 总数；downSamples 只是最近的若干条 */
+  downCount: number;
+  /** 被踩的样本（最多若干条，供人工回看） */
+  downSamples: JudgeCaseSummary[];
+}
+
+/** 单条 case 保存的回答字符上限（超出截断并置 answerTruncated） */
+export const JUDGE_ANSWER_MAX_CHARS = 8000;
+/** 单步工具调用参数落盘上限（字符）：write_text_file 的 args 可能是整份文件正文 */
+export const JUDGE_STEP_ARGS_MAX_CHARS = 500;
+/** 提问落盘上限（字符）：用户可能粘贴长文档，与 answer 对称设限 */
+export const JUDGE_QUESTION_MAX_CHARS = 4000;
+/** 评测集条数上限，超出按「无 run 且无 verdict」优先淘汰最旧 */
+export const JUDGE_CASE_LIMIT = 500;
+/** 单条 case 保留的评测运行次数上限（含失败） */
+export const JUDGE_RUN_LIMIT = 5;
+/** 维度分下限 */
+export const JUDGE_SCORE_MIN = 1;
+/** 维度分上限 */
+export const JUDGE_SCORE_MAX = 5;
+/** 忠实度 ≤2 时 overall 的封顶值 */
+export const JUDGE_CAP_OVERALL = 2;

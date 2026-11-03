@@ -41,8 +41,13 @@ import type { ToolContext, ToolResult } from './types';
  */
 const MAX_TURNS = 16;
 
-/** 工具结果回显给模型前的最大长度，超出部分截断 */
-const TOOL_RESULT_PREVIEW_LIMIT = 200;
+/**
+ * 工具结果回显给模型前的最大长度，超出部分截断。
+ *
+ * 导出是给 judge 的 case 快照复用（judge/snapshot.ts）：评测看到的轨迹片段长度
+ * 必须与模型当时看到的完全一致，否则「模型没看到完整结果」这件事就无从判断。
+ */
+export const TOOL_RESULT_PREVIEW_LIMIT = 200;
 
 /** 模型开始请求某个工具时的即时通知（用于 UI 立刻显示「正在调用」） */
 interface ToolCallStartInfo {

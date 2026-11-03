@@ -8,12 +8,16 @@ import type {
   AuthErrorCode,
   ErrorCode,
   FinishReason,
+  JudgeCaseSummary,
+  JudgeRun,
+  JudgeSummary,
   MessageAttachment,
   ModelInfo,
   PlanStep,
   ProviderId,
   ThemeMode,
   ToolStep,
+  Verdict,
 } from './types';
 
 /** 全部 IPC 通道名 */
@@ -71,6 +75,14 @@ export const CHANNELS = {
   SKILL_IMPORT: 'skill:import',
   /** 删除一个技能目录（confirm 为真才执行） */
   SKILL_DELETE: 'skill:delete',
+  /** 用户对一条 assistant 消息点赞 / 踩 / 取消评价（同时维护评测 case） */
+  JUDGE_SET_FEEDBACK: 'judge:setFeedback',
+  /** 对一条 assistant 消息跑一次 LLM 评测 */
+  JUDGE_RUN: 'judge:run',
+  /** 列出评测集（可按会话过滤） */
+  JUDGE_LIST: 'judge:list',
+  /** 评测集汇总（设置页「质量」分组用） */
+  JUDGE_SUMMARY: 'judge:summary',
   /** 事件：主进程 → 渲染层，登录态变化（token 刷新 / 被登出） */
   AUTH_CHANGED: 'auth:changed',
 } as const;
@@ -402,3 +414,52 @@ export type {
   SkillOpenDirResult,
   SkillSummary,
 } from './skills';
+
+/* ───────────────────────────── 质量评测（LLM-as-judge） ───────────────────────────── */
+
+/** 设置 / 取消某条消息的用户评价；verdict 传 null 表示取消评价 */
+export interface JudgeSetFeedbackRequest {
+  conversationId: string;
+  messageId: string;
+  verdict: Verdict | null;
+}
+
+/** 设置评价的结果；ok 为假时 error 说明原因（渲染层据此回滚乐观更新） */
+export interface JudgeSetFeedbackResult {
+  ok: boolean;
+  /** 落盘后的实际评价；取消评价时无此字段 */
+  verdict?: Verdict;
+  /** 对应的评测 case id（case 已按需补建） */
+  caseId?: string;
+  error?: string;
+}
+
+/** 对某条消息跑一次评测 */
+export interface JudgeRunRequest {
+  conversationId: string;
+  messageId: string;
+}
+
+/** 评测结果；失败时 ok 为假且 error 说明原因，run 里可能仍带一条失败记录 */
+export interface JudgeRunResult {
+  ok: boolean;
+  run?: JudgeRun;
+  error?: string;
+}
+
+/** 列出评测集；conversationId 缺省表示全部会话，limit 缺省取实现方默认值 */
+export interface JudgeListRequest {
+  conversationId?: string;
+  limit?: number;
+}
+
+/** 评测集列表（只含摘要字段，不含 answer / steps） */
+export type JudgeListResult = JudgeCaseSummary[];
+
+/** 汇总请求；days 缺省 30 */
+export interface JudgeSummaryRequest {
+  days?: number;
+}
+
+/** 汇总结果 */
+export type JudgeSummaryResult = JudgeSummary;

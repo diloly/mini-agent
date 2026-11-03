@@ -24,6 +24,14 @@ import type {
   ContextStatsResponse,
   Conversation,
   ConversationSummary,
+  JudgeListRequest,
+  JudgeListResult,
+  JudgeRunRequest,
+  JudgeRunResult,
+  JudgeSetFeedbackRequest,
+  JudgeSetFeedbackResult,
+  JudgeSummaryRequest,
+  JudgeSummaryResult,
   ListModelsDraft,
   OkResult,
   OpenExternalResult,
@@ -114,6 +122,14 @@ export interface MiniAgentApi {
   importSkills(): Promise<SkillImportResult>;
   /** 删除一个技能（confirm 为真才执行） */
   deleteSkill(request: SkillDeleteRequest): Promise<SkillDeleteResult>;
+  /** 设置 / 取消某条回答的用户评价（赞 / 踩）；主进程同时维护对应的评测 case */
+  setJudgeFeedback(request: JudgeSetFeedbackRequest): Promise<JudgeSetFeedbackResult>;
+  /** 对某条回答跑一次 LLM 评测（手动触发） */
+  runJudge(request: JudgeRunRequest): Promise<JudgeRunResult>;
+  /** 列出评测集摘要（不含 answer / steps，可按会话过滤） */
+  listJudgeCases(request: JudgeListRequest): Promise<JudgeListResult>;
+  /** 评测集汇总（设置页「质量」分组用） */
+  getJudgeSummary(request: JudgeSummaryRequest): Promise<JudgeSummaryResult>;
 }
 
 declare global {

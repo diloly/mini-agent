@@ -10,7 +10,7 @@
 import { Alert, Button } from '@heroui/react';
 import { useEffect, useMemo, useRef } from 'react';
 import MessageBubble from './MessageBubble';
-import { useAppStore, isProviderConfigured } from '../store/useAppStore';
+import { useAppStore, isProviderConfigured, type JudgeIndexEntry } from '../store/useAppStore';
 
 export default function MessageList() {
   const messages = useAppStore((state) => state.messages);
@@ -24,6 +24,12 @@ export default function MessageList() {
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const sendMessage = useAppStore((state) => state.sendMessage);
   const resumeChat = useAppStore((state) => state.resumeChat);
+  // 评测相关：索引（评过没有 / 用户评价）、进行中的消息、失败提示，以及两个动作
+  const judgeIndex = useAppStore((state) => state.judgeIndex);
+  const judgingMessageIds = useAppStore((state) => state.judgingMessageIds);
+  const judgeError = useAppStore((state) => state.judgeError);
+  const setFeedback = useAppStore((state) => state.setFeedback);
+  const runJudge = useAppStore((state) => state.runJudge);
 
   const streamingMessageId = activeRequestId
     ? streams[activeRequestId]?.assistantMessageId ?? null
@@ -113,17 +119,43 @@ export default function MessageList() {
             </p>
           </div>
         ) : (
-          messages.map((message, index) => (
-            <MessageBubble
-              key={message.id}
-              message={message}
-              streaming={message.id === streamingMessageId}
-              onRetry={() => handleRetry(index)}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onEdit={loading ? undefined : handleEdit}
-              onResume={() => void resumeChat(message.id)}
-            />
-          ))
+          messages.map((message, index) => {
+            const streaming = message.id === streamingMessageId;
+            // 索引里只存 hasRun / verdict，不含分数（PRD P5：对话界面不显示分数）
+            const entry: JudgeIndexEntry | undefined = judgeIndex[message.id];
+            const judging = judgingMessageIds.includes(message.id);
+            // 失败提示只对「刚失败的那一条」生效；store 负责 1.5s 后清除
+            const failedText =
+              judgeError !== null && judgeError.messageId === message.id ? judgeError.text : undefined;
+            // 只有「已收尾的助手回答」可评：流式中没有完整回答；报错轮次由
+            // snapshot.ts 拒收 —— 这里必须用同一套条件，否则会渲染一个点了必然失败的按钮
+            const judgeable =
+              message.role === 'assistant' &&
+              !streaming &&
+              message.meta?.errorCode === undefined &&
+              message.meta?.finishReason !== 'error';
+            // verdict 优先取评测索引（= case.verdict）；索引没有时回退 message.meta.feedback ——
+            // case 建失败（找不到提问）时反馈仍靠 meta 保活，否则用户重启后会看到「刚点的赞没了」
+            return (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                streaming={streaming}
+                onRetry={() => handleRetry(index)}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onEdit={loading ? undefined : handleEdit}
+                onResume={() => void resumeChat(message.id)}
+                onFeedback={
+                  judgeable ? (verdict) => void setFeedback(message.id, verdict) : undefined
+                }
+                onJudge={judgeable ? () => void runJudge(message.id) : undefined}
+                verdict={entry?.verdict ?? message.meta?.feedback}
+                judged={entry?.hasRun ?? false}
+                judging={judging}
+                judgeError={failedText}
+              />
+            );
+          })
         )}
       </div>
     </div>

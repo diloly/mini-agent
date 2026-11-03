@@ -20,7 +20,7 @@ import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'r
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type PlanStep, type PlanStepStatus, type ToolStep, type ToolStepStatus } from '../../shared/types';
+import { ERROR_RETRYABLE, ERROR_TEXT, type Message, type PlanStep, type PlanStepStatus, type ToolStep, type ToolStepStatus, type Verdict } from '../../shared/types';
 import { buildTimeline } from '../../shared/timeline';
 import { openExternal } from '../lib/api';
 
@@ -114,19 +114,24 @@ const ACTION_ROW_VISIBILITY =
 
 /**
  * 操作按钮图标：统一 24 视图盒、1.75 描边、颜色随 currentColor。
- * 手绘 SVG 而不引图标库 —— 只需要 3 个形状，装一个依赖不划算。
+ * 手绘 SVG 而不引图标库 —— 只需要几个形状，装一个依赖不划算。
+ *
+ * filled=true 时把描边形状改成实心填充：评测按钮用它区分「已评测 / 未评测」，
+ * 只靠颜色深浅区分太弱（灰阶用户与色弱用户都看不出来），实心/空心一眼可辨。
  */
 function ActionIcon({
   children,
   className = '',
+  filled = false,
 }: {
   children: ReactNode;
   className?: string;
+  filled?: boolean;
 }): ReactNode {
   return (
     <svg
       viewBox="0 0 24 24"
-      fill="none"
+      fill={filled ? 'currentColor' : 'none'}
       stroke="currentColor"
       strokeWidth={1.75}
       strokeLinecap="round"
@@ -157,6 +162,20 @@ function PaperclipIcon(): ReactNode {
   );
 }
 
+/**
+ * 评测图标：双星（sparkle）——「让另一个模型来评一下」。
+ * 与赞 / 踩的拇指形状区分开：拇指表达用户态度，星表达机器打分，
+ * 三者并排时不会看混。
+ */
+function JudgeSparkle(): ReactNode {
+  return (
+    <>
+      <path d="M12 3.4l1.9 4.7 4.7 1.9-4.7 1.9L12 16.6l-1.9-4.7L5.4 10l4.7-1.9L12 3.4z" />
+      <path d="M18.4 15.6l.85 2.05 2.05.85-2.05.85-.85 2.05-.85-2.05-2.05-.85 2.05-.85.85-2.05z" />
+    </>
+  );
+}
+
 /** 气泡属性 */
 export interface MessageBubbleProps {
   message: Message;
@@ -173,6 +192,21 @@ export interface MessageBubbleProps {
   onEdit?: (messageId: string, content: string) => void;
   /** 续跑入口；未提供或消息不可续跑时不渲染「继续」按钮 */
   onResume?: () => void;
+  /**
+   * 用户评价（赞 / 踩 / 取消）。传 null 表示取消评价。
+   * 未提供时不渲染赞踩按钮（用户消息永远不传）。
+   */
+  onFeedback?: (verdict: Verdict | null) => void;
+  /** 对这条回答跑一次评测。未提供时不渲染评测按钮（流式输出中由调用方传 undefined） */
+  onJudge?: () => void;
+  /** 当前评价；undefined 表示未评价 */
+  verdict?: Verdict;
+  /** 是否已有至少一次成功评测（决定评测图标是实心还是空心） */
+  judged?: boolean;
+  /** 是否正在评测（转圈 + 禁用，防连点） */
+  judging?: boolean;
+  /** 评测失败文案；有值时评测图标短暂变红（时长由 store 控制，组件只负责渲染） */
+  judgeError?: string;
 }
 
 /**
@@ -210,6 +244,7 @@ async function writeClipboard(text: string): Promise<boolean> {
 
 export default function MessageBubble(props: MessageBubbleProps) {
   const { message, streaming, onRetry, onOpenSettings, onEdit, onResume } = props;
+  const { onFeedback, onJudge, verdict, judged, judging, judgeError } = props;
   const isUser = message.role === 'user';
   const content = message.content;
   const errorCode = message.meta?.errorCode;
@@ -282,6 +317,20 @@ export default function MessageBubble(props: MessageBubbleProps) {
      否则编辑态下会留下一个空容器，被 flex 的 gap 撑出一段多余空白。 */
   const showActions = content.length > 0 && !editing;
 
+  /* 评价 / 评测三个图标：只挂在助手消息上，且必须由调用方提供回调
+     （用户消息、流式输出中调用方不传，三个图标整体不渲染）。
+     失败态由 store 的 judgeError 驱动并在 1.5s 后自动清除，组件自己不起 timer。 */
+  const showFeedback = !isUser && onFeedback !== undefined;
+  const showJudge = !isUser && onJudge !== undefined;
+  const judgeFailed = judgeError !== undefined;
+  const judgeLabel = judging
+    ? '评测中…'
+    : judgeFailed
+      ? '评测失败'
+      : judged === true
+        ? '已评测，可再评一次'
+        : '评测这条回答';
+
   /* 操作按钮组：用户消息渲染在气泡下方，助手消息渲染在正文下方。
      图标而非文字 —— 图标语义足够明确，且不打扰阅读（用户要求）。 */
   const actionButtons = showActions ? (
@@ -325,6 +374,62 @@ export default function MessageBubble(props: MessageBubbleProps) {
             </ActionIcon>
           )}
         </button>
+        {/* 赞：已选中时实心 + accent；再点一次取消评价（不引入「无感」第三态） */}
+        {showFeedback ? (
+          <button
+            type="button"
+            className={`${ACTION_BUTTON_CLASS} ${verdict === 'up' ? 'text-accent' : 'text-muted'}`}
+            onClick={() => onFeedback?.(verdict === 'up' ? null : 'up')}
+            aria-label={verdict === 'up' ? '取消「有帮助」' : '有帮助'}
+            aria-pressed={verdict === 'up'}
+            title={verdict === 'up' ? '取消「有帮助」' : '有帮助'}
+          >
+            <ActionIcon filled={verdict === 'up'}>
+              <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+            </ActionIcon>
+          </button>
+        ) : null}
+        {/* 踩：语义上是负面评价，用 text-danger 是对的；但不加红底（红线：只有危险动作才上底色） */}
+        {showFeedback ? (
+          <button
+            type="button"
+            className={`${ACTION_BUTTON_CLASS} ${verdict === 'down' ? 'text-danger' : 'text-muted'}`}
+            onClick={() => onFeedback?.(verdict === 'down' ? null : 'down')}
+            aria-label={verdict === 'down' ? '取消「没帮助」' : '没帮助'}
+            aria-pressed={verdict === 'down'}
+            title={verdict === 'down' ? '取消「没帮助」' : '没帮助'}
+          >
+            <ActionIcon filled={verdict === 'down'}>
+              <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+            </ActionIcon>
+          </button>
+        ) : null}
+        {/* 评测：四态 —— 默认空心灰 / 评测中 accent 转圈且禁用 / 已评测实心灰 / 失败变红 1.5s。
+            失败刻意**不换图标**：换叉形会让人以为「评测功能坏了」，而实际情况是这一次没评成、
+            历史分数照旧；形状不变只变色，语义最接近真相。
+            任何状态下都不显示分数（PRD P5：分数只在设置页汇总里出现）。 */}
+        {showJudge ? (
+          <button
+            type="button"
+            className={`${ACTION_BUTTON_CLASS} ${
+              judgeFailed ? 'text-danger' : judging === true ? 'text-accent' : 'text-muted'
+            } disabled:cursor-not-allowed`}
+            disabled={judging === true}
+            aria-busy={judging === true}
+            aria-label={judgeLabel}
+            title={judgeFailed ? (judgeError ?? '评测失败') : judgeLabel}
+            onClick={() => onJudge?.()}
+          >
+            {/* 失败只换颜色，不改实心度：退回空心会让人以为旧分数被清了，
+                而后端语义恰恰是「失败不动历史成绩」 */}
+            <ActionIcon
+              filled={judged === true && judging !== true}
+              className={judging === true ? 'animate-spin' : ''}
+            >
+              <JudgeSparkle />
+            </ActionIcon>
+          </button>
+        ) : null}
       </>
     ) : null;
 

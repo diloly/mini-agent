@@ -23,6 +23,7 @@ import {
   sortConversationsByPinned,
   type ErrorCode,
   type FinishReason,
+  type JudgeSummary,
   type Message,
   type MessageAttachment,
   type ModelInfo,
@@ -31,6 +32,7 @@ import {
   type ThemeMode,
   type PlanStep,
   type ToolStep,
+  type Verdict,
 } from '../../shared/types';
 import {
   abortChat,
@@ -41,11 +43,15 @@ import {
   getAuthState as apiGetAuthState,
   getConfig,
   getContextStats,
+  getJudgeSummary,
   listConversations,
   getConversation,
+  listJudgeCases,
   listModels,
+  runJudge as apiRunJudge,
   saveConfig,
   sendChat,
+  setJudgeFeedback,
   signIn as apiSignIn,
   signOut as apiSignOut,
   signUp as apiSignUp,
@@ -60,6 +66,12 @@ import {
   openSkillsDir as apiOpenSkillsDir,
 } from '../lib/api';
 import { applyTheme, resolveTheme } from '../lib/theme';
+
+/** 评测失败红叉的展示时长（毫秒）：由 store 自己起 timer 清除，组件只读状态 */
+const JUDGE_ERROR_FLASH_MS = 1500;
+
+/** 汇总窗口（天）：设置页「近 N 天」与 IPC 请求共用同一个值，避免两处各写一个 30 */
+export const JUDGE_SUMMARY_DAYS = 30;
 
 /**
  * 判断当前 Provider 是否已完成配置（渲染层视角）。
@@ -95,6 +107,17 @@ export function isAuthed(state: AuthState | null): boolean {
 
 /** 右侧主区当前展示的视图：会话聊天 / 技能管理 */
 export type MainView = 'chat' | 'skills';
+
+/**
+ * 评测集索引项：界面只需要「评过没有」与「用户评价」两件事。
+ * 刻意不存分数 —— 分数只在设置页汇总里出现（PRD P5：对话界面不显示分数）。
+ */
+export interface JudgeIndexEntry {
+  /** 是否已有至少一次成功评测 */
+  hasRun: boolean;
+  /** 用户评价（赞 / 踩）；未评价时不写 */
+  verdict?: Verdict;
+}
 
 /** 一轮进行中的流式状态 */
 export interface StreamState {
@@ -138,6 +161,14 @@ export interface AppState {
   skills: SkillSummary[];
   /** 当前会话的上下文用量（主进程按真实装配口径估算）；null 表示尚未取到 */
   contextStats: ContextStatsResponse | null;
+  /** 正在评测中的 assistant 消息 id（驱动气泡上的转圈图标，同时用于挡住重复点击） */
+  judgingMessageIds: string[];
+  /** messageId → 评测索引（评过没有 + 用户评价）；切换会话时整体替换 */
+  judgeIndex: Record<string, JudgeIndexEntry>;
+  /** 设置页「质量」分组的汇总；null 表示尚未拉取 */
+  judgeSummary: JudgeSummary | null;
+  /** 最近一次评测失败的提示（气泡上的红叉 + 文案）；null 表示当前无错误 */
+  judgeError: { messageId: string; text: string } | null;
 
   hydrate: () => Promise<void>;
   refreshConversations: () => Promise<void>;
@@ -146,6 +177,25 @@ export interface AppState {
    * 会话切换、一轮生成结束、消息定稿时调用；生成中的增量不逐字刷新（浪费 IPC）。
    */
   refreshContextStats: () => Promise<void>;
+  /**
+   * 拉取某会话的评测索引，写成 messageId → { hasRun, verdict }。
+   * 切会话后调用；结果回显 conversationId，切走后才回来的过期结果直接丢弃。
+   * 失败静默 —— 索引只是图标状态，不能打断主流程。
+   */
+  refreshJudgeIndex: (conversationId: string) => Promise<void>;
+  /**
+   * 设置 / 取消某条消息的用户评价。
+   * 先本地乐观更新（图标立刻变），IPC 返回 ok=false 或抛错时回滚到改动前的条目。
+   */
+  setFeedback: (messageId: string, verdict: Verdict | null) => Promise<void>;
+  /**
+   * 对某条消息跑一次评测。
+   * 同一消息不并发；成功只点亮「已评测」（不写分数，PRD P5），
+   * 失败把红叉文案写入 judgeError 并在 1.5s 后自动清除。
+   */
+  runJudge: (messageId: string) => Promise<void>;
+  /** 拉取设置页「质量」分组的汇总（近 JUDGE_SUMMARY_DAYS 天）；失败静默 */
+  refreshJudgeSummary: () => Promise<void>;
   selectConversation: (id: string | null) => Promise<void>;
   /**
    * 新建会话并选中。
@@ -318,6 +368,26 @@ function toSummary(conversation: {
  */
 let creatingConversation: Promise<void> | null = null;
 
+/** 评测失败红叉的自动清除定时器；同一时刻只留一个（新错误直接顶掉旧错误） */
+let judgeErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 写入评测失败提示，并在 JUDGE_ERROR_FLASH_MS 后自动清除。
+ * 定时器由 store 自己持有：组件只读 judgeError，卸载 / 重渲染都不会漏掉清除，
+ * 也不会在组件里各起一个 timer 互相踩。
+ */
+function flashJudgeError(messageId: string, text: string): void {
+  if (judgeErrorTimer !== null) {
+    clearTimeout(judgeErrorTimer);
+    judgeErrorTimer = null;
+  }
+  useAppStore.setState({ judgeError: { messageId, text } });
+  judgeErrorTimer = setTimeout(() => {
+    judgeErrorTimer = null;
+    useAppStore.setState({ judgeError: null });
+  }, JUDGE_ERROR_FLASH_MS);
+}
+
 export const useAppStore = create<AppState>()((set, get) => ({
   conversations: [],
   activeConversationId: null,
@@ -335,6 +405,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   authChecked: false,
   skills: [],
   contextStats: null,
+  judgingMessageIds: [],
+  judgeIndex: {},
+  judgeSummary: null,
+  judgeError: null,
 
   /** 启动时水合：拉配置 + 会话列表，并选中最近更新的会话 */
   hydrate: async () => {
@@ -392,6 +466,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  /**
+   * 拉取某会话的评测索引。
+   * 只取摘要里的 hasRun / verdict 两个字段：分数不进渲染层索引（PRD P5：对话界面不显示分数），
+   * 也顺带避免把整份 JudgeCaseSummary 挂在每条消息上。
+   */
+  refreshJudgeIndex: async (conversationId) => {
+    try {
+      const cases = await listJudgeCases(conversationId);
+      // 过期结果丢弃：切走后才回来的索引不能贴到新会话的消息上
+      if (get().activeConversationId !== conversationId) {
+        return;
+      }
+      const judgeIndex: Record<string, JudgeIndexEntry> = {};
+      for (const item of cases) {
+        const entry: JudgeIndexEntry = { hasRun: item.hasRun };
+        if (item.verdict !== undefined) {
+          entry.verdict = item.verdict;
+        }
+        judgeIndex[item.messageId] = entry;
+      }
+      set({ judgeIndex });
+    } catch {
+      // 索引属辅助信息：失败保留上一次结果，不弹错
+    }
+  },
+
   /** 切换会话：重绑定进行中的流，再拉取该会话的全量消息 */
   selectConversation: async (id) => {
     if (!id) {
@@ -407,6 +507,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         error: null,
         // 上下文用量是会话级信息：没有会话就没有可展示的数字
         contextStats: null,
+        // 评测索引同样是会话级信息：清空，避免空态页残留上一条会话的图标状态
+        judgeIndex: {},
+        judgeError: null,
       }));
       return;
     }
@@ -416,6 +519,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       messages: [],
       streams: rebindStreams(state.streams, id),
       error: null,
+      // 换会话先清索引：新会话的索引还没回来，不能挂着上一个会话的「已评测」图标
+      judgeIndex: {},
+      judgeError: null,
       // 必须同时退出「生成中」：否则旧流的 requestId 会残留在 activeRequestId 上，
       // 结果是输入框被锁死、点「停止」还会停到已经切走的旧流上
       loading: false,
@@ -472,6 +578,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         });
         // 会话切好、消息就位后刷新上下文用量（异步，不阻塞界面渲染）
         void get().refreshContextStats();
+        // 评测索引与消息一一对应，必须等 messages 落定后再拉，否则图标无处可挂
+        void get().refreshJudgeIndex(id);
       }
     } catch {
       set({ error: '读取会话失败，请重试' });
@@ -1113,6 +1221,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         mainView: 'chat',
         error: null,
         unreadConversations: {},
+        // 跨账号：评测索引 / 汇总属于上一个账号的数据，必须一并清掉（主进程侧也按账号分目录）
+        judgingMessageIds: [],
+        judgeIndex: {},
+        judgeSummary: null,
+        judgeError: null,
       }));
       return;
     }
@@ -1191,6 +1304,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
         loading: false,
         activeWorkspaceRoot: null,
         unreadConversations: {},
+        // 评测数据已由主进程一并删除：内存里的索引 / 汇总 / 错误提示全部复位
+        judgingMessageIds: [],
+        judgeIndex: {},
+        judgeSummary: null,
+        judgeError: null,
       }));
       return result.removedCount;
     } catch {
@@ -1240,6 +1358,113 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return await apiOpenSkillsDir();
     } catch {
       return { ok: false, reason: '打开技能目录失败' };
+    }
+  },
+
+  /**
+   * 设置 / 取消某条消息的评价。
+   *
+   * 乐观更新：先改本地索引让图标立刻响应，再发 IPC；
+   * IPC 返回 ok=false 或抛错时回滚到「改动前的那一条」——
+   * 若改动前根本没有条目，则整条删掉，不留半成品。
+   */
+  setFeedback: async (messageId, verdict) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) {
+      return;
+    }
+    // 显式标注 | undefined：tsconfig 未开 noUncheckedIndexedAccess，索引访问的类型不含 undefined
+    const previous: JudgeIndexEntry | undefined = get().judgeIndex[messageId];
+    // 第一步：乐观更新（只动 verdict，hasRun 保持原值 —— 评价不代表评过分）
+    set((state) => {
+      const current: JudgeIndexEntry | undefined = state.judgeIndex[messageId];
+      const next: JudgeIndexEntry = { hasRun: current?.hasRun ?? false };
+      if (verdict !== null) {
+        next.verdict = verdict;
+      }
+      return { judgeIndex: { ...state.judgeIndex, [messageId]: next } };
+    });
+    try {
+      const result = await setJudgeFeedback(conversationId, messageId, verdict);
+      if (!result.ok) {
+        throw new Error(result.error ?? '评价失败');
+      }
+      // 以主进程落盘结果为准：取消评价时 verdict 缺省 ⇒ 字段被删掉（不留第三态）
+      set((state) => {
+        const current: JudgeIndexEntry | undefined = state.judgeIndex[messageId];
+        const next: JudgeIndexEntry = { hasRun: current?.hasRun ?? false };
+        if (result.verdict !== undefined) {
+          next.verdict = result.verdict;
+        }
+        return { judgeIndex: { ...state.judgeIndex, [messageId]: next } };
+      });
+    } catch {
+      // 回滚：失败不弹横幅，图标自己翻回去就是最直接的反馈
+      set((state) => {
+        const judgeIndex = { ...state.judgeIndex };
+        if (previous === undefined) {
+          delete judgeIndex[messageId];
+        } else {
+          judgeIndex[messageId] = previous;
+        }
+        return { judgeIndex };
+      });
+    }
+  },
+
+  /**
+   * 对某条消息跑一次评测。
+   * 失败**不**点亮「已评测」—— 红叉闪 1.5s 并给出主进程的原始文案，
+   * 让用户能区分「模型答得差」与「judge 没跑起来」。
+   */
+  runJudge: async (messageId) => {
+    const conversationId = get().activeConversationId;
+    if (!conversationId) {
+      return;
+    }
+    // 同一消息不并发：连点会白烧一次 judge 调用，也会让图标状态互相打架
+    if (get().judgingMessageIds.includes(messageId)) {
+      return;
+    }
+    set((state) => ({ judgingMessageIds: [...state.judgingMessageIds, messageId] }));
+    try {
+      const result = await apiRunJudge(conversationId, messageId);
+      const run = result.run;
+      if (result.ok && run?.scores !== undefined) {
+        // 用户可能已切走会话：此时写进去的键永远等不到 refreshJudgeIndex 来清，
+        // 会在 judgeIndex 里留下一条孤儿记录（不会串号，但白占内存且难排查）
+        if (get().activeConversationId !== conversationId) {
+          return;
+        }
+        // 成功：只点亮「已评测」，分数一律不写进 judgeIndex（PRD P5）
+        set((state) => {
+          const current: JudgeIndexEntry | undefined = state.judgeIndex[messageId];
+          const entry: JudgeIndexEntry = { hasRun: true };
+          if (current?.verdict !== undefined) {
+            entry.verdict = current.verdict;
+          }
+          return { judgeIndex: { ...state.judgeIndex, [messageId]: entry } };
+        });
+        return;
+      }
+      flashJudgeError(messageId, result.error ?? run?.error ?? '评测失败，请重试');
+    } catch {
+      flashJudgeError(messageId, '评测失败，请重试');
+    } finally {
+      // 无论成功失败都要摘掉「评测中」，否则图标会永久转圈
+      set((state) => ({
+        judgingMessageIds: state.judgingMessageIds.filter((id) => id !== messageId),
+      }));
+    }
+  },
+
+  /** 拉取「质量」分组汇总；失败静默（设置页保留上一次的数字好过闪成空态） */
+  refreshJudgeSummary: async () => {
+    try {
+      const summary = await getJudgeSummary(JUDGE_SUMMARY_DAYS);
+      set({ judgeSummary: summary });
+    } catch {
+      // 静默：面板保留上一次结果
     }
   },
 

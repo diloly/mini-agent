@@ -1,5 +1,5 @@
 /**
- * 设置弹层：左右分栏（左导航 + 右内容），含「模型 / 外观 / 记忆 / 账号」四个分组。
+ * 设置弹层：左右分栏（左导航 + 右内容），含「模型 / 外观 / 记忆 / 账号 / 质量」五个分组。
  *
  * 安全约定：
  * - API Key 只进不出：渲染层拿不到历史密钥，输入框永远为空；
@@ -36,6 +36,7 @@ import {
 } from '../../shared/types';
 import { saveConfig } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
+import QualityPanel from './QualityPanel';
 
 /** 模型服务候选项 */
 const PROVIDER_OPTIONS: Array<{ id: ProviderId; label: string }> = [
@@ -56,7 +57,7 @@ function formatWindowTokens(value: number): string {
 }
 
 /** 设置分组 id */
-type SettingsSectionId = 'model' | 'appearance' | 'memory' | 'account';
+type SettingsSectionId = 'model' | 'appearance' | 'memory' | 'account' | 'quality';
 
 /** 设置分组（顺序即导航顺序） */
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
@@ -64,6 +65,7 @@ const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string }> = [
   { id: 'appearance', label: '外观' },
   { id: 'memory', label: '记忆' },
   { id: 'account', label: '账号' },
+  { id: 'quality', label: '质量' },
 ];
 
 /** 子标题样式 */
@@ -79,6 +81,7 @@ export default function SettingsDialog() {
   const auth = useAppStore((state) => state.auth);
   const signOut = useAppStore((state) => state.signOut);
   const clearLocalData = useAppStore((state) => state.clearLocalData);
+  const refreshJudgeSummary = useAppStore((state) => state.refreshJudgeSummary);
 
   const [providerId, setProviderId] = useState<ProviderId>('deepseek');
   const [deepseekBaseUrl, setDeepseekBaseUrl] = useState(DEFAULT_BASE_URL.deepseek);
@@ -119,6 +122,12 @@ export default function SettingsDialog() {
       return;
     }
     prevOpenRef.current = true;
+    // 弹层由关到开时预取一次质量汇总：分组只在「点击」时请求，而重开弹层不会重置
+    // section —— 上次停在「质量」时面板会永久停在「读取中…」。
+    // 只在还没有数据时拉，有数据就等用户点「刷新」，避免每次开设置都读一次盘。
+    if (useAppStore.getState().judgeSummary === null) {
+      void refreshJudgeSummary();
+    }
     const config = useAppStore.getState().config;
     if (!config) {
       return;
@@ -384,6 +393,11 @@ export default function SettingsDialog() {
                         // 切走分组即放弃未完成的二次确认：否则用户换个分组再回来，
                         // 按钮仍显示「确认清除？」而一次点击就直接删数据 —— 等于把二次确认穿透了。
                         setConfirmingClear(false);
+                        // 切到「质量」时拉一次汇总：面板自身不发请求（避免每次挂载都重复请求，
+                        // 也让「刷新」按钮成为唯一的显式重取入口）。
+                        if (item.id === 'quality') {
+                          void refreshJudgeSummary();
+                        }
                       }}
                     >
                       {item.label}
@@ -772,7 +786,7 @@ export default function SettingsDialog() {
                         <Label className={SECTION_LABEL_CLASS}>本地数据</Label>
                         <div className="flex items-center gap-2">
                           {/* 危险操作：用实心 danger。刻意不用 danger-soft ——
-                              它取 --danger-soft，而本主题把它定成 #fef2f2（浅色），
+                              它取 --danger-soft，而本主题把这个色定成很浅的浅红，
                               在白底弹层上几乎看不见，会重演「不像按钮」的问题。 */}
                           <Button
                             variant="danger"
@@ -808,6 +822,8 @@ export default function SettingsDialog() {
                       </div>
                     </div>
                   ) : null}
+
+                  {section === 'quality' ? <QualityPanel /> : null}
                 </div>
               </div>
             </Modal.Body>

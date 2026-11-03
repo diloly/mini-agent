@@ -30,6 +30,7 @@ import {
   setActiveAccount,
   writeConversations,
 } from '../storage';
+import { clearJudgeData } from '../judge/store';
 import { getSupabase } from './client';
 import { AuthService } from './service';
 
@@ -169,6 +170,12 @@ export function registerAuthHandlers(emit: AuthEmit): void {
         const removedCount = (await readConversations()).length;
         // 无激活账号时会静默忽略（storage 的既有语义）
         await writeConversations([]);
+        // 评测数据与 conversations.json 同级同账号：会话清空后它们引用的 messageId 全部失效，
+        // 不删则 case 里的 question 全文 + 回答正文会以「用户以为已删除」的形态留在磁盘上
+        const accountId = getActiveAccountId();
+        if (accountId) {
+          await clearJudgeData(accountId);
+        }
         // 会话已清空，恢复目标随之失效。不重置的话下次启动会拿这个悬空 id 去找会话 ——
         // hydrate 能兜底，但会白跑一次，且 meta 里留着脏值。
         await mutateAccountMeta((meta) => {

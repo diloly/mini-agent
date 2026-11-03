@@ -13,38 +13,59 @@
 import type { LlmMessage } from '../providers/types';
 import { SKILLS_MAX_COUNT, type SkillMeta } from './registry';
 
-/** 一级清单总字符预算（含说明文字与全部技能行）；整条消息超出即降级为「只列目录名」 */
-const CATALOG_MAX_CHARS = 2_000;
-/** 完整档下每条 description 的截断长度 */
-const CATALOG_DESC_CHARS = 80;
-
-/** 清单抬头：必须讲清「清单是可用技能 / skill 填技能标识符 / 先 read_skill 再动手」三件事 */
-function buildIntro(): string {
-  return (
-    '【可用技能】\n' +
-    '下面这些技能已安装，都是可选能力。当任务与某个技能相关时，先用 read_skill 读取它的 SKILL.md ' +
-    '说明书（里面写了适用场景、用法、以及有哪些脚本），再决定是否用 run_skill_script 运行其中的脚本。' +
-    '不要仅凭技能名猜测用法。skill 参数一律填**技能标识符**（即下面每行开头的标识；' +
-    '成套技能形如 `套件名/技能名`）。'
-  );
-}
+/**
+ * 一级清单总字符预算（含说明文字与全部技能行）；整条消息超出即降级为「只列目录名」。
+ * 导出给 promptVersion 指纹使用：预算变了，模型实际看到的清单形态就会变。
+ */
+export const CATALOG_MAX_CHARS = 2_000;
+/** 完整档下每条 description 的截断长度（同样是影响 prompt 形态的预算常量） */
+export const CATALOG_DESC_CHARS = 80;
 
 /**
- * 截断声明：仅当技能数达到上限（`SKILLS_MAX_COUNT`）时返回非空字符串。
+ * 清单抬头：必须讲清「清单是可用技能 / skill 填技能标识符 / 先 read_skill 再动手」三件事。
+ *
+ * 导出给 promptVersion 指纹使用 —— 这段文案改了，等于模型看到的 prompt 变了；
+ * 但清单**内容**（装了哪些技能）不参与指纹，否则「昨天装了个技能」就会被算成 prompt 变更。
+ */
+export const SKILLS_CATALOG_INTRO =
+  '【可用技能】\n' +
+  '下面这些技能已安装，都是可选能力。当任务与某个技能相关时，先用 read_skill 读取它的 SKILL.md ' +
+  '说明书（里面写了适用场景、用法、以及有哪些脚本），再决定是否用 run_skill_script 运行其中的脚本。' +
+  '不要仅凭技能名猜测用法。skill 参数一律填**技能标识符**（即下面每行开头的标识；' +
+  '成套技能形如 `套件名/技能名`）。';
+
+/**
+ * 截断声明模板：仅在技能数达到上限（`SKILLS_MAX_COUNT`）时才拼进清单。
  *
  * 🔴 为什么必须有：清单最多只列 50 个，若不声明，模型会把「只列出的这些」当成全集，
  * 进而对第 51 个技能**向用户断言「不存在」**——这正是本项目最忌讳的「把不确定性讲成确定性」。
  * 这句必须让模型知道「这不是全集」，并要求它不要据此断言「没有某技能」。
+ *
+ * 常量里已经内联了 SKILLS_MAX_COUNT 的当前值，故上限本身变化也会反映进 promptVersion。
  */
+export const SKILLS_TRUNCATION_NOTE_TEMPLATE =
+  `⚠ 已达到清单上限：以下**可能不是全部技能**（最多列出 ${SKILLS_MAX_COUNT} 个）。` +
+  `若你认为某个技能本该存在却没出现在这里，**不要据此断言「没有该技能」或「该技能不存在」**` +
+  `——它可能只是没有被列出；可以请用户到「设置 → 技能」查看完整列表。`;
+
+/**
+ * 紧凑档（超预算降级）的说明行模板。
+ * `<count>` 是占位符，拼接时替换为实际技能数 —— 留占位符是为了让指纹只反映文案本身。
+ */
+export const SKILLS_COMPACT_NOTE_TEMPLATE =
+  '技能较多（共 <count> 个），此处只列名称；需要时用 read_skill 读取某个技能的说明书（SKILL.md 正文）。';
+
+/** 截断声明：仅当技能数达到上限（`SKILLS_MAX_COUNT`）时返回非空字符串 */
 function buildTruncationNote(count: number): string {
   if (count < SKILLS_MAX_COUNT) {
     return '';
   }
-  return (
-    `⚠ 已达到清单上限：以下**可能不是全部技能**（最多列出 ${SKILLS_MAX_COUNT} 个）。` +
-    `若你认为某个技能本该存在却没出现在这里，**不要据此断言「没有该技能」或「该技能不存在」**` +
-    `——它可能只是没有被列出；可以请用户到「设置 → 技能」查看完整列表。`
-  );
+  return SKILLS_TRUNCATION_NOTE_TEMPLATE;
+}
+
+/** 紧凑档说明行：把模板里的 <count> 换成实际技能数 */
+function buildCompactNote(count: number): string {
+  return SKILLS_COMPACT_NOTE_TEMPLATE.replace('<count>', String(count));
 }
 
 /**
@@ -82,9 +103,9 @@ export function buildSkillsCatalogMessage(skills: SkillMeta[]): LlmMessage | nul
   if (skills.length === 0) {
     return null;
   }
-  const intro = buildIntro();
   const truncationNote = buildTruncationNote(skills.length);
-  const prefix = truncationNote.length > 0 ? `${intro}\n\n${truncationNote}` : intro;
+  const prefix =
+    truncationNote.length > 0 ? `${SKILLS_CATALOG_INTRO}\n\n${truncationNote}` : SKILLS_CATALOG_INTRO;
 
   // 完整档：带 description。整条消息（含抬头）不超预算就直接用。
   const fullLines = skills.map(fullSkillLine);
@@ -96,7 +117,6 @@ export function buildSkillsCatalogMessage(skills: SkillMeta[]): LlmMessage | nul
   // 紧凑档：超预算 ⇒ 砍掉全部 description，只留 dirName（dirName 永不截断）。
   const compactLines = skills.map((meta) => `- ${meta.dirName}`);
   const compactContent =
-    `${prefix}\n\n技能较多（共 ${skills.length} 个），此处只列名称；` +
-    `需要时用 read_skill 读取某个技能的说明书（SKILL.md 正文）。\n\n${compactLines.join('\n')}`;
+    `${prefix}\n\n${buildCompactNote(skills.length)}\n\n${compactLines.join('\n')}`;
   return { role: 'system', content: compactContent };
 }

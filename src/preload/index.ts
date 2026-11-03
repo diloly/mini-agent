@@ -31,6 +31,14 @@ import {
   type ConversationSummary,
   type DeleteConversationRequest,
   type GetConversationRequest,
+  type JudgeListRequest,
+  type JudgeListResult,
+  type JudgeRunRequest,
+  type JudgeRunResult,
+  type JudgeSetFeedbackRequest,
+  type JudgeSetFeedbackResult,
+  type JudgeSummaryRequest,
+  type JudgeSummaryResult,
   type ListModelsDraft,
   type ListModelsRequest,
   type ModelListResult,
@@ -169,6 +177,20 @@ const api = {
   /** 删除一个技能（confirm 为真才执行） */
   deleteSkill: (request: SkillDeleteRequest): Promise<SkillDeleteResult> =>
     ipcRenderer.invoke(CHANNELS.SKILL_DELETE, request),
+
+  // ---- 质量评测 ----
+  /** 设置 / 取消某条回答的用户评价（赞 / 踩）；主进程同时维护对应的评测 case */
+  setJudgeFeedback: (request: JudgeSetFeedbackRequest): Promise<JudgeSetFeedbackResult> =>
+    ipcRenderer.invoke(CHANNELS.JUDGE_SET_FEEDBACK, request),
+  /** 对某条回答跑一次 LLM 评测（手动触发，绝不自动评） */
+  runJudge: (request: JudgeRunRequest): Promise<JudgeRunResult> =>
+    ipcRenderer.invoke(CHANNELS.JUDGE_RUN, request),
+  /** 列出评测集摘要（不含 answer / steps，可按会话过滤） */
+  listJudgeCases: (request: JudgeListRequest): Promise<JudgeListResult> =>
+    ipcRenderer.invoke(CHANNELS.JUDGE_LIST, request),
+  /** 评测集汇总（设置页「质量」分组用） */
+  getJudgeSummary: (request: JudgeSummaryRequest): Promise<JudgeSummaryResult> =>
+    ipcRenderer.invoke(CHANNELS.JUDGE_SUMMARY, request),
 } as const;
 
 contextBridge.exposeInMainWorld('api', api);

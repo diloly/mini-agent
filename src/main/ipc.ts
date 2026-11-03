@@ -75,13 +75,15 @@ import {
 } from '../shared/types';
 import { estimateTokens } from '../shared/tokens';
 import { getProvider, isProviderId } from './providers';
+import { buildProviderConfig, getProviderSettings } from './providers/runtime';
 import { combineSignals } from './providers/sse';
 import { errorMessage, toProviderError, type LlmMessage, type LLMProvider } from './providers/types';
 import { runAgentLoop, type HarnessEvent, type ToolContext } from './harness';
 import { getBackupRoot, getDefaultWorkspaceRoot, resolveWorkspaceRoot } from './workspace';
 import { exportConversationMarkdown } from './conversation-export';
 import { buildMemorySystemMessage, buildWorkspaceRulesMessage, extractWorkspaceMemory, readWorkspaceMemory } from './workspace-memory';
-import { hasSecret, isEncryptionAvailable, loadSecret, saveSecret } from './secret';
+import { hasSecret, isEncryptionAvailable, saveSecret } from './secret';
+import { computePromptVersion, computeToolSetHash } from './judge/fingerprint';
 import {
   getActiveAccountId,
   mutateAccountMeta,
@@ -97,6 +99,7 @@ import { skillsRoot } from './skills/paths';
 import { listSkills } from './skills/registry';
 import { buildSkillsCatalogMessage } from './skills/catalog';
 import { registerSkillHandlers } from './skills/handlers';
+import { registerJudgeHandlers } from './judge/handlers';
 
 /** 拉取模型列表的统一超时（毫秒） */
 const MODELS_TIMEOUT_MS = 8_000;
@@ -215,35 +218,6 @@ interface ChatSession {
 
 /** requestId → 进行中的生成任务 */
 const running = new Map<string, ChatSession>();
-
-/** 各 Provider 的通用配置片段（DeepSeek / Custom 额外带 apiKeyEnc，Ollama 额外带 numCtx） */
-interface ProviderSettingsLike {
-  baseUrl: string;
-  model: string;
-  apiKeyEnc?: string;
-  numCtx?: number;
-  /** deepseek / custom 的上下文窗口（仅用量统计用；ollama 走 numCtx） */
-  contextWindow?: number;
-}
-
-/** 取配置的某个 Provider 片段（用类型断言避免对 providerId 做分支判断） */
-function getProviderSettings(config: AppConfig, providerId: ProviderId): ProviderSettingsLike {
-  return config.providers[providerId] as ProviderSettingsLike;
-}
-
-/**
- * 构造运行期 Provider 配置，其中包含解密后的明文 Key。
- * 明文 Key 仅存在于主进程内存，绝不通过 IPC 外传。
- */
-function buildProviderConfig(config: AppConfig, providerId: ProviderId = config.activeProviderId) {
-  const settings = getProviderSettings(config, providerId);
-  return {
-    baseUrl: settings.baseUrl,
-    model: settings.model,
-    apiKey: loadSecret(providerId, settings.apiKeyEnc),
-    numCtx: settings.numCtx,
-  };
-}
 
 /**
  * 刷新工作区记忆：额外调一次模型把本轮对话提炼进 MEMORY.md。
@@ -549,9 +523,18 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     });
   }
 
-  /** 收尾落盘：把最终全文与结束状态写进 assistant 消息 */
+  /**
+   * 收尾落盘：把最终全文与结束状态写进 assistant 消息。
+   *
+   * @param session 本轮任务
+   * @param toolContext 本轮的工具体系上下文 —— 指纹要按「本轮实际暴露了哪些工具」算，
+   *   故必须由调用方显式传入（不能在这里重新推导：那时的工作区/技能根可能已经变了）
+   * @param content 最终正文
+   * @param meta 结束状态
+   */
   async function finalizeAssistantMessage(
     session: ChatSession,
+    toolContext: ToolContext,
     content: string,
     meta: {
       finishReason: FinishReason;
@@ -563,6 +546,11 @@ export function createIpcRouter(deps: IpcRouterDeps) {
       resumable?: boolean;
     },
   ): Promise<void> {
+    // 指纹在**收尾这一刻**算，而不是留到建评测 case 时算：
+    // promptVersion / toolSetHash 描述的是「这一轮生成时的形态」，若延后到用户点踩时再算，
+    // 「生成完又装了技能 / 改了工作区规则」就会让指纹漂移，历史分数再也无法分组比较。
+    const promptVersion = computePromptVersion();
+    const toolSetHash = computeToolSetHash(toolContext);
     const exportedConversation = await mutateConversations<Conversation | null>((list) => {
       const conversation = list.find((item) => item.id === session.conversationId);
       if (!conversation) {
@@ -581,6 +569,9 @@ export function createIpcRouter(deps: IpcRouterDeps) {
         resumable: Boolean(meta.resumable),
         errorCode: meta.errorCode,
         errorText: meta.errorText,
+        // 生成指纹：两个值都是字符串常量，无条件写入（每轮都必须有，缺失即视为旧数据）
+        promptVersion,
+        toolSetHash,
         // 工具步骤与轮数仅在确实拿到时才写入，避免把 undefined 盖掉已有值
         ...(meta.steps !== undefined ? { steps: meta.steps } : {}),
         // 计划清单同样仅在确实拿到时写入，避免用 undefined 盖掉已有值
@@ -749,7 +740,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
           .deleteCheckpoint(successAccountId, session.conversationId, session.assistantMessageId)
           .catch(() => undefined);
       }
-      await finalizeAssistantMessage(session, result.text, {
+      await finalizeAssistantMessage(session, toolContext, result.text, {
         finishReason: result.finishReason,
         steps: Array.from(stepMap.values()),
         plan: session.plan,
@@ -779,7 +770,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
               session.assistantMessageId,
             )) !== null
           : false;
-        await finalizeAssistantMessage(session, session.text, {
+        await finalizeAssistantMessage(session, toolContext, session.text, {
           finishReason: 'aborted',
           steps: Array.from(stepMap.values()),
           plan: session.plan,
@@ -804,7 +795,7 @@ export function createIpcRouter(deps: IpcRouterDeps) {
             session.assistantMessageId,
           )) !== null
         : false;
-      await finalizeAssistantMessage(session, session.text, {
+      await finalizeAssistantMessage(session, toolContext, session.text, {
         finishReason: 'error',
         errorCode: providerError.code,
         errorText: providerError.userMessage,
@@ -1556,6 +1547,8 @@ export function createIpcRouter(deps: IpcRouterDeps) {
     registerAuthHandlers(emit);
     // 技能导入通道（skill:*）：同样复用本路由私有的 emit + 主窗口访问器
     registerSkillHandlers({ emit, getMainWindow: deps.getMainWindow });
+    // 质量评测通道（judge:*）：只读写账号目录下的 judge-cases.json，不需要窗口与事件推送
+    registerJudgeHandlers();
   }
 
   return { register };

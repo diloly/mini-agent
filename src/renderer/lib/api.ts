@@ -23,6 +23,10 @@ import type {
   ConfigSaveInput,
   ContextStatsResponse,
   ConversationSummary,
+  JudgeListResult,
+  JudgeRunResult,
+  JudgeSetFeedbackResult,
+  JudgeSummaryResult,
   ListModelsDraft,
   OkResult,
   OpenExternalResult,
@@ -37,7 +41,7 @@ import type {
   SkillOpenDirResult,
   SkillSummary,
 } from '../../shared/ipc-channels';
-import type { Conversation, ModelInfo, ProviderId, PublicConfig } from '../../shared/types';
+import type { Conversation, ModelInfo, ProviderId, PublicConfig, Verdict } from '../../shared/types';
 import type { MiniAgentApi } from '../types/window';
 
 /** 取 preload 注入的 API；未就绪时给出明确报错，便于定位 preload 加载失败 */
@@ -249,4 +253,31 @@ export function importSkills(): Promise<SkillImportResult> {
 /** 删除一个技能目录（confirm 为真才执行） */
 export function deleteSkill(request: SkillDeleteRequest): Promise<SkillDeleteResult> {
   return ensureApi().deleteSkill(request);
+}
+
+/**
+ * 设置 / 取消某条回答的用户评价。
+ * verdict 传 null 表示取消（主进程会删掉 meta 上的 feedback 字段，而不是写 null）。
+ */
+export function setJudgeFeedback(
+  conversationId: string,
+  messageId: string,
+  verdict: Verdict | null,
+): Promise<JudgeSetFeedbackResult> {
+  return ensureApi().setJudgeFeedback({ conversationId, messageId, verdict });
+}
+
+/** 对某条回答跑一次 LLM 评测（手动触发；失败时 ok 为假且 error 说明原因） */
+export function runJudge(conversationId: string, messageId: string): Promise<JudgeRunResult> {
+  return ensureApi().runJudge({ conversationId, messageId });
+}
+
+/** 列出评测集摘要；不传 conversationId 表示全部会话 */
+export function listJudgeCases(conversationId?: string): Promise<JudgeListResult> {
+  return ensureApi().listJudgeCases(conversationId ? { conversationId } : {});
+}
+
+/** 评测集汇总；days 缺省 30（主进程同样以 30 兜底） */
+export function getJudgeSummary(days?: number): Promise<JudgeSummaryResult> {
+  return ensureApi().getJudgeSummary(days !== undefined ? { days } : {});
 }

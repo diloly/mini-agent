@@ -240,43 +240,73 @@ function buildExtractInput(existing: string, user: Message, assistant: Message):
 }
 
 /**
- * 把工作区记忆包装成一条注入用的 system 消息。
+ * 记忆区前缀：system 消息里「长期记忆」段落之前的固定说明。
  * 第二句必须保留：前者防止陈旧记忆压过当前指令，后者防止模型每轮复述记忆。
+ *
+ * 导出给 promptVersion 指纹使用 —— 这段文案改了，等于模型看到的 prompt 变了。
+ */
+export const MEMORY_SECTION_PREFIX =
+  '以下是本工作区的长期记忆，由往次对话自动整理，可能不完整或已过时。\n' +
+  '它与用户当前的要求冲突时，一律以用户当前的要求为准；不要向用户复述本段内容。\n\n';
+
+/**
+ * 把工作区记忆包装成一条注入用的 system 消息。
+ * @param memory 记忆正文（已 trim，可能为空串 —— 调用方负责判空后跳过注入）
  */
 export function buildMemorySystemMessage(memory: string): LlmMessage {
   return {
     role: 'system',
-    content:
-      '以下是本工作区的长期记忆，由往次对话自动整理，可能不完整或已过时。\n' +
-      '它与用户当前的要求冲突时，一律以用户当前的要求为准；不要向用户复述本段内容。\n\n' +
-      memory,
+    content: `${MEMORY_SECTION_PREFIX}${memory}`,
   };
 }
+
+/** 工作区约定的抬头（system 消息首行） */
+export const WORKSPACE_RULES_HEADER = '【工作区约定】';
+
+/**
+ * 工作区根目录声明模板。
+ *
+ * `<root>` 是**占位符**，拼接时替换为真实根目录。之所以留占位符而不是直接写死，
+ * 是因为 promptVersion 只该反映「模板文案变没变」—— 用户换个工作区目录，
+ * 不该让全部历史分数失去可比性。
+ */
+export const WORKSPACE_ROOT_LINE_TEMPLATE =
+  '你的工作区根目录是 <root>。所有文件类工具的相对路径都以此为基准，工作区之外一律不可访问。';
+
+/**
+ * 常驻条款（与记忆开关无关，始终注入）：
+ * ① 计划清单的用法；② 每步都要向用户交代做了什么。
+ */
+export const WORKSPACE_PLAN_RULES: readonly string[] = [
+  '任务需要 3 步以上、或用户明确要求先给计划时，用 update_plan 工具维护一份「计划清单」，每步标 pending（待开始）/ in_progress（进行中）/ done（已完成）。整份覆盖（非增量），同一时刻最多只有一个 in_progress。开始某一步之前、完成某一步之后，都要各调用一次 update_plan。简单问题不必建计划——这能让用户看到你的进度，而不是只在最后给结论。',
+  '每完成一步（尤其是调完工具之后），先用一两句话向用户说明这一步做了什么、结果是什么，再进行下一步。不要一声不吭地连着调工具、最后才一次性给结论。',
+];
+
+/** 记忆功能开启时才注入的条款：每日笔记要求（关闭时连这条要求都不出现） */
+export const WORKSPACE_MEMORY_RULES: readonly string[] = [
+  '完成实质工作后，必须调用 append_daily_note 记录一条简短笔记（做了什么、根因是什么、得出什么结论、选定了哪个方案）。实质工作包括：创建或修改文件、修复问题、产出文档或报告、重构代码、做技术选型。寒暄、普通问答、一次性查询不要记录。',
+  '笔记只写有长期价值的事实，不要复述整段对话，不要写临时路径或普通报错。一次调用只记一条，篇幅控制在几行以内。',
+  '`.agent/memory/` 下还有由系统维护的长期记忆 MEMORY.md，你不需要读它或改它。',
+];
 
 /**
  * 常驻的工作区约定：每轮都注入（与记忆是否为空无关），让模型知道工作区边界；
  * 记忆功能开启时再加上「做完实质工作要记一条每日笔记」等要求。
+ * @param root 本次生成所属会话的工作区根目录（绝对路径）
  * @param memoryEnabled 记忆功能总开关，关闭时不注入任何记忆相关条款
  */
 export function buildWorkspaceRulesMessage(root: string, memoryEnabled: boolean): LlmMessage {
-  const rules = [
-    `你的工作区根目录是 ${root}。所有文件类工具的相对路径都以此为基准，工作区之外一律不可访问。`,
-  ];
+  // 模板里只有一处 <root>，replace 只替换首个匹配，真实路径不会被二次替换。
+  // 用函数形式而不是字符串替换：字符串形式会把路径里的 `$&` 之类当成替换模式，Windows 路径有可能踩到。
+  const rules: string[] = [WORKSPACE_ROOT_LINE_TEMPLATE.replace('<root>', () => root)];
   // 计划能力条款：无论记忆功能是否开启都注入，让模型在复杂任务里主动用 update_plan 给用户看进度
-  rules.push(
-    '任务需要 3 步以上、或用户明确要求先给计划时，用 update_plan 工具维护一份「计划清单」，每步标 pending（待开始）/ in_progress（进行中）/ done（已完成）。整份覆盖（非增量），同一时刻最多只有一个 in_progress。开始某一步之前、完成某一步之后，都要各调用一次 update_plan。简单问题不必建计划——这能让用户看到你的进度，而不是只在最后给结论。',
-    '每完成一步（尤其是调完工具之后），先用一两句话向用户说明这一步做了什么、结果是什么，再进行下一步。不要一声不吭地连着调工具、最后才一次性给结论。',
-  );
+  rules.push(...WORKSPACE_PLAN_RULES);
   if (memoryEnabled) {
-    rules.push(
-      '完成实质工作后，必须调用 append_daily_note 记录一条简短笔记（做了什么、根因是什么、得出什么结论、选定了哪个方案）。实质工作包括：创建或修改文件、修复问题、产出文档或报告、重构代码、做技术选型。寒暄、普通问答、一次性查询不要记录。',
-      '笔记只写有长期价值的事实，不要复述整段对话，不要写临时路径或普通报错。一次调用只记一条，篇幅控制在几行以内。',
-      '`.agent/memory/` 下还有由系统维护的长期记忆 MEMORY.md，你不需要读它或改它。',
-    );
+    rules.push(...WORKSPACE_MEMORY_RULES);
   }
   return {
     role: 'system',
-    content: `【工作区约定】\n${rules.map((text, index) => `${index + 1}. ${text}`).join('\n')}`,
+    content: `${WORKSPACE_RULES_HEADER}\n${rules.map((text, index) => `${index + 1}. ${text}`).join('\n')}`,
   };
 }
 
