@@ -361,7 +361,10 @@ export default function SettingsDialog() {
           <Modal.Dialog>
             <Modal.Header>
               <Modal.Heading>设置</Modal.Heading>
-              <Modal.CloseTrigger aria-label="关闭" title="关闭">
+              {/* 不写 title：react-aria 的 filterDOMProps 白名单里没有它，运行时会被静默丢弃，
+                  写了等于没写。可访问名称由 aria-label 提供；关闭按钮的 X 图标本身语义自明，
+                  不需要额外的悬停提示（真要提示得用 tooltip 组件，不是 title 属性） */}
+              <Modal.CloseTrigger aria-label="关闭">
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
